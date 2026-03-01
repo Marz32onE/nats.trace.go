@@ -154,12 +154,18 @@ func (c *Conn) SubscribeJetStream(subject string, handler MsgHandler) (*nats.Sub
 
 func (c *Conn) wrapHandler(subject, queue string, handler MsgHandler) nats.MsgHandler {
 	return func(msg *nats.Msg) {
-		parentCtx := c.opts.propagator.Extract(context.Background(), headerCarrier{msg.Header})
+		msgCtx := c.opts.propagator.Extract(context.Background(), headerCarrier{msg.Header})
 		spanName := subject + " receive"
-		ctx, span := c.tracer.Start(parentCtx, spanName,
+		opts := []trace.SpanStartOption{
 			trace.WithSpanKind(trace.SpanKindConsumer),
 			trace.WithAttributes(receiveAttrs(msg, queue)...),
-		)
+		}
+		// Fan-out: use link only (no parent from message) so multiple consumers do not
+		// become N children of one producer in the same trace. Per messaging spec.
+		if sc := trace.SpanFromContext(msgCtx).SpanContext(); sc.IsValid() {
+			opts = append(opts, trace.WithLinks(trace.Link{SpanContext: sc}))
+		}
+		ctx, span := c.tracer.Start(context.Background(), spanName, opts...)
 		defer span.End()
 		handler(ctx, msg)
 	}
