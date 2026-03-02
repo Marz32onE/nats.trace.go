@@ -28,15 +28,31 @@ type MessagesContext interface {
 	Drain()
 }
 
+// MsgWithContext carries a message and the context with extracted trace (for Fetch batch iteration).
+type MsgWithContext struct {
+	Ctx context.Context
+	Msg Msg
+}
+
+// MessageBatch is the result of Fetch/FetchBytes/FetchNoWait. Iterate over MessagesWithContext()
+// to get (ctx, msg) with trace context; call Error() after the channel is closed.
+type MessageBatch interface {
+	MessagesWithContext() <-chan MsgWithContext
+	Error() error
+}
+
 // ConsumerInfo mirrors jetstream.ConsumerInfo.
 type ConsumerInfo = jetstream.ConsumerInfo
 
-// Consumer mirrors jetstream.Consumer. Consume(handler) passes (ctx, msg) to handler; Messages().Next() returns (ctx, msg, error); Next() returns (ctx, msg, error).
-// Fetch/FetchBytes/FetchNoWait are not provided (batch pull trace wrapping skipped).
+// Consumer mirrors jetstream.Consumer. Consume, Messages, Next; Fetch/FetchBytes/FetchNoWait
+// return MessageBatch with MessagesWithContext() for trace context per message.
 type Consumer interface {
 	Consume(handler MessageHandler, opts ...jetstream.PullConsumeOpt) (ConsumeContext, error)
 	Messages(opts ...jetstream.PullMessagesOpt) (MessagesContext, error)
 	Next(ctx context.Context, opts ...jetstream.FetchOpt) (context.Context, Msg, error)
+	Fetch(batch int, opts ...jetstream.FetchOpt) (MessageBatch, error)
+	FetchBytes(maxBytes int, opts ...jetstream.FetchOpt) (MessageBatch, error)
+	FetchNoWait(batch int) (MessageBatch, error)
 	Info(ctx context.Context) (*ConsumerInfo, error)
 	CachedInfo() *ConsumerInfo
 }
@@ -97,6 +113,30 @@ func (c *consumerImpl) Next(ctx context.Context, opts ...jetstream.FetchOpt) (co
 	return msgCtx, msg, nil
 }
 
+func (c *consumerImpl) Fetch(batch int, opts ...jetstream.FetchOpt) (MessageBatch, error) {
+	raw, err := c.c.Fetch(batch, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return wrapMessageBatch(c.conn, c.consumerName, raw), nil
+}
+
+func (c *consumerImpl) FetchBytes(maxBytes int, opts ...jetstream.FetchOpt) (MessageBatch, error) {
+	raw, err := c.c.FetchBytes(maxBytes, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return wrapMessageBatch(c.conn, c.consumerName, raw), nil
+}
+
+func (c *consumerImpl) FetchNoWait(batch int) (MessageBatch, error) {
+	raw, err := c.c.FetchNoWait(batch)
+	if err != nil {
+		return nil, err
+	}
+	return wrapMessageBatch(c.conn, c.consumerName, raw), nil
+}
+
 func (c *consumerImpl) Info(ctx context.Context) (*ConsumerInfo, error) {
 	return c.c.Info(ctx)
 }
@@ -116,6 +156,51 @@ func receiveAttrs(msg jetstream.Msg) []attribute.KeyValue {
 		attrs = append(attrs, semconv.MessagingMessageBodySize(len(d)))
 	}
 	return attrs
+}
+
+type messageBatchTrace struct {
+	ch   chan MsgWithContext
+	raw  jetstream.MessageBatch
+}
+
+func (m *messageBatchTrace) MessagesWithContext() <-chan MsgWithContext {
+	return m.ch
+}
+
+func (m *messageBatchTrace) Error() error {
+	return m.raw.Error()
+}
+
+func wrapMessageBatch(conn *natstrace.Conn, consumerName string, raw jetstream.MessageBatch) MessageBatch {
+	ch := make(chan MsgWithContext)
+	go func() {
+		defer close(ch)
+		tracer, prop := conn.TraceContext()
+		var lastSpan trace.Span
+		for msg := range raw.Messages() {
+			if lastSpan != nil {
+				lastSpan.End()
+				lastSpan = nil
+			}
+			h := msg.Headers()
+			if h == nil {
+				h = make(nats.Header)
+			}
+			msgCtx := prop.Extract(context.Background(), &natstrace.HeaderCarrier{H: h})
+			spanName := msg.Subject() + " receive"
+			attrs := append(receiveAttrs(msg), attribute.String(attrConsumerName, consumerName))
+			ctx, span := tracer.Start(msgCtx, spanName,
+				trace.WithSpanKind(trace.SpanKindConsumer),
+				trace.WithAttributes(attrs...),
+			)
+			lastSpan = span
+			ch <- MsgWithContext{Ctx: ctx, Msg: msg}
+		}
+		if lastSpan != nil {
+			lastSpan.End()
+		}
+	}()
+	return &messageBatchTrace{ch: ch, raw: raw}
 }
 
 type consumeContextImpl struct {

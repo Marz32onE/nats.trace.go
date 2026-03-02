@@ -7,7 +7,7 @@
 //   - Consume(handler): handler is func(ctx context.Context, msg Msg); ctx carries trace extracted from message headers.
 //   - Messages(): Next() returns (ctx, msg, error) with ctx carrying extracted trace.
 //   - Next(): returns (ctx, msg, error) for a single message.
+//   - Fetch/FetchBytes/FetchNoWait: return MessageBatch; iterate MessagesWithContext() for (ctx, msg) with trace and consumer span per message.
 //
 // Async publish APIs (PublishAsync, PublishMsgAsync) are not provided.
-// Batch pull (Fetch, FetchBytes, FetchNoWait) are not wrapped for per-message trace and are skipped.
 package jetstreamtrace
