@@ -1,127 +1,140 @@
-# nats.trace.go
+# natstrace
 
-`natstracing` is a thin OpenTelemetry (OTLP) tracing wrapper around the
-[nats.io/nats.go](https://github.com/nats-io/nats.go) client library.  
-It injects W3C TraceContext into every outbound NATS message and extracts it
-on the subscriber side, so every message flowing through NATS carries a
-distributed trace that can be collected by any OTLP-compatible backend
-(Jaeger, Tempo, Honeycomb, etc.).
+OpenTelemetry (OTLP) tracing for the [NATS](https://nats.io) client: **Core NATS** and **JetStream**.  
+W3C TraceContext is injected into outbound messages and extracted on the consumer side, so messages carry a distributed trace that can be collected by any OTLP backend (Jaeger, Tempo, Honeycomb, etc.).
+
+The API mirrors [nats.io/nats.go](https://github.com/nats-io/nats.go) and [nats.io/nats.go/jetstream](https://github.com/nats-io/nats.go/tree/main/jetstream): same function names and types, with `context.Context` added for tracing.
 
 ---
 
-## Features
+## Packages
 
-| Feature | Details |
-|---|---|
-| **Context propagation** | W3C `traceparent` / `tracestate` injected into NATS message headers |
-| **Producer spans** | `SpanKindProducer` span per `Publish` / `PublishMsg` / `Request` call |
-| **Consumer spans** | `SpanKindConsumer` span per received message; child of the producer span |
-| **3 connection modes** | Plain, mTLS, credentials file (NKey + JWT) |
-| **OTLP semantic conventions** | `messaging.system=nats`, `messaging.destination.name`, `messaging.operation.type`, `messaging.message.body.size`, `messaging.consumer.group.name` (semconv v1.27.0) |
-| **Configurable** | Custom `TracerProvider` and `TextMapPropagator` via functional options |
+| Package | Purpose |
+|--------|---------|
+| **natstrace** | Core NATS: `Connect`, `Conn`, `Publish`, `PublishMsg`, `Request`, `Subscribe`, `QueueSubscribe` |
+| **jetstreamtrace** | JetStream: `New(conn)`, `JetStream` (Publish, Stream), `Stream` (Consumer), `Consumer` (Consume, Messages, Next) |
+
+Use **natstrace** for plain NATS pub/sub and request-reply. Use **jetstreamtrace** for JetStream streams and consumers; it takes a `*natstrace.Conn` so trace is propagated end-to-end.
 
 ---
 
 ## Installation
 
 ```bash
-go get github.com/Marz32onE/nats.trace.go
+go get github.com/Marz32onE/natstrace
 ```
 
 ---
 
 ## Quick Start
 
-### 1 — Plain connection
+### 1. Core NATS — connect and publish
 
 ```go
 import (
-    natstracing "github.com/Marz32onE/nats.trace.go"
+    natstrace "github.com/Marz32onE/natstrace/natstrace"
     "go.opentelemetry.io/otel/propagation"
 )
 
-conn, err := natstracing.Connect("nats://localhost:4222", nil,
-    natstracing.WithTracerProvider(otel.GetTracerProvider()),
-    natstracing.WithPropagator(propagation.NewCompositeTextMapPropagator(
+conn, err := natstrace.Connect("nats://localhost:4222", nil,
+    natstrace.WithTracerProvider(otel.GetTracerProvider()),
+    natstrace.WithPropagator(propagation.NewCompositeTextMapPropagator(
         propagation.TraceContext{},
         propagation.Baggage{},
     )),
 )
+// conn.Publish(ctx, subject, data) / PublishMsg(ctx, msg) / Request(ctx, subject, data, timeout)
 ```
 
-### 2 — mTLS connection
+### 2. Core NATS — subscribe (handler receives context with extracted trace)
 
 ```go
-conn, err := natstracing.ConnectTLS(
-    "nats://localhost:4222",
-    "client.crt", "client.key", "ca.crt",
-    nil, // extra nats.Options
-)
-```
-
-### 3 — Credentials file (NKey + JWT)
-
-```go
-conn, err := natstracing.ConnectWithCredentials(
-    "nats://localhost:4222",
-    "/path/to/user.creds",
-    nil, // extra nats.Options
-)
-```
-
----
-
-## Publishing
-
-```go
-ctx := context.Background() // or a context already carrying a span
-
-// Inject trace context and publish
-err := conn.Publish(ctx, "orders.created", payload)
-
-// Publish a pre-built message
-msg := &nats.Msg{Subject: "orders.created", Data: payload}
-err = conn.PublishMsg(ctx, msg)
-
-// Request-reply
-reply, err := conn.Request(ctx, "inventory.check", payload, 5*time.Second)
-```
-
-## Subscribing
-
-```go
-// Subscribe – the callback receives a context with the extracted traceID.
 conn.Subscribe("orders.created", func(ctx context.Context, msg *nats.Msg) {
-    // ctx carries the traceID from the publisher; create child spans here.
     _, span := tracer.Start(ctx, "process order")
     defer span.End()
-    // ... handle msg
+    // handle msg
 })
 
-// Queue subscribe (load-balanced consumer group)
-conn.QueueSubscribe("orders.created", "processors",
-    func(ctx context.Context, msg *nats.Msg) { /* ... */ })
+conn.QueueSubscribe("orders.created", "processors", func(ctx context.Context, msg *nats.Msg) {
+    // ...
+})
+```
+
+### 3. JetStream — create stream and publish
+
+```go
+import (
+    natstrace "github.com/Marz32onE/natstrace/natstrace"
+    "github.com/Marz32onE/natstrace/jetstreamtrace"
+)
+
+conn, _ := natstrace.Connect("nats://localhost:4222", nil /* opts */)
+js, err := jetstreamtrace.New(conn)
+// CreateOrUpdateStream, then:
+ack, err := js.Publish(ctx, "orders.created", payload)
+// or js.PublishMsg(ctx, msg, opts...)
+```
+
+### 4. JetStream — consume (Consume callback or Messages().Next())
+
+```go
+stream, _ := js.Stream(ctx, "ORDERS")
+consumer, _ := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+    Durable: "worker-1",
+})
+// Option A: Consume with handler(ctx, msg)
+cc, _ := consumer.Consume(func(ctx context.Context, msg jetstreamtrace.Msg) {
+    // ctx has extracted trace; create child spans as needed
+})
+defer cc.Stop()
+
+// Option B: Messages() iterator — Next() returns (ctx, msg, error)
+iter, _ := consumer.Messages()
+ctx, msg, err := iter.Next()
+// ... later iter.Stop() or iter.Drain()
 ```
 
 ---
 
-## Span attributes (OTLP Messaging Semconv v1.27.0)
+## Features
 
-| Attribute | Value |
-|---|---|
-| `messaging.system` | `nats` |
-| `messaging.destination.name` | NATS subject |
-| `messaging.operation.type` | `publish` (producer) / `receive` (consumer) |
-| `messaging.operation.name` | `publish` / `receive` |
-| `messaging.message.body.size` | byte length of `msg.Data` |
-| `messaging.message.conversation_id` | reply subject (if set) |
-| `messaging.consumer.group.name` | queue group name (queue subscriptions only) |
+| Feature | Details |
+|--------|---------|
+| **Context propagation** | W3C `traceparent` / `tracestate` in NATS message headers |
+| **Producer spans** | `SpanKindProducer` per Publish / PublishMsg (Core and JetStream) |
+| **Consumer spans** | `SpanKindConsumer` per received message; context carries extracted trace |
+| **JetStream consumer name** | Receive spans include `messaging.consumer.name` (durable/consumer name) so you can see which consumer handled the message |
+| **Connection modes** | Plain, TLS (`ConnectTLS`), credentials file (`ConnectWithCredentials`) |
+| **OTLP semantics** | `messaging.system=nats`, `messaging.destination.name`, `messaging.operation`, `messaging.message.body.size`, `messaging.consumer.group.name` (queue), `messaging.consumer.name` (JetStream) |
+| **Configurable** | `WithTracerProvider`, `WithPropagator` |
 
 ---
 
-## Options
+## Span attributes (OTLP Messaging Semconv)
+
+| Attribute | Value |
+|-----------|--------|
+| `messaging.system` | `nats` |
+| `messaging.destination.name` | Subject |
+| `messaging.operation.type` | `publish` / `receive` |
+| `messaging.operation.name` | `publish` / `receive` |
+| `messaging.message.body.size` | Byte length of payload |
+| `messaging.consumer.group.name` | Queue group (queue subscriptions only) |
+| `messaging.consumer.name` | Consumer name (JetStream Consume / Messages only) |
+
+---
+
+## Options (natstrace)
 
 | Option | Default | Description |
-|---|---|---|
-| `WithTracerProvider(tp)` | `otel.GetTracerProvider()` | Custom TracerProvider |
-| `WithPropagator(p)` | `otel.GetTextMapPropagator()` | Custom TextMapPropagator |
+|--------|---------|-------------|
+| `WithTracerProvider(tp)` | `otel.GetTracerProvider()` | TracerProvider for spans |
+| `WithPropagator(p)` | `otel.GetTextMapPropagator()` | Inject/extract (e.g. TraceContext + Baggage) |
+
+---
+
+## API notes
+
+- **Sync only**: Async publish (e.g. `PublishAsync`) is not wrapped. JetStream batch pull (`Fetch`, `FetchBytes`, `FetchNoWait`) is not provided so each message can have its own consumer span; use `Consume`, `Messages()`, or `Next()` instead.
+- **Types**: `jetstreamtrace` re-exports types such as `Msg`, `PubAck`, `StreamConfig`, `ConsumerConfig`, `ConsumerInfo`, `ConsumeContext`, `MessagesContext` so callers need not import `jetstream` for common types.
+- **HeaderCarrier**: `natstrace.HeaderCarrier` adapts `nats.Header` to `propagation.TextMapCarrier` for custom inject/extract (e.g. in WebSocket or HTTP bridges).
