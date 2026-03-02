@@ -1,4 +1,4 @@
-module github.com/Marz32onE/nats.trace.go
+module github.com/Marz32onE/natstrace
 
 go 1.24.0
 
