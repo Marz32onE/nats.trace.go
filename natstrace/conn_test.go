@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	natstrace "github.com/Marz32onE/nats.trace.go/natstrace"
+	natstrace "github.com/Marz32onE/natstrace/natstrace"
 	nats "github.com/nats-io/nats.go"
 	natssrv "github.com/nats-io/nats-server/v2/server"
 	"go.opentelemetry.io/otel/attribute"

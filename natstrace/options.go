@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	instrumentationName    = "github.com/Marz32onE/nats.trace.go/natstrace"
+	instrumentationName    = "github.com/Marz32onE/natstrace/natstrace"
 	instrumentationVersion = "0.3.0"
 )
 

@@ -3,7 +3,7 @@ package jetstreamtrace
 import (
 	"context"
 
-	"github.com/Marz32onE/nats.trace.go/natstrace"
+	"github.com/Marz32onE/natstrace/natstrace"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
