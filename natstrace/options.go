@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	instrumentationName    = "github.com/Marz32onE/nats.trace.go"
-	instrumentationVersion = "0.2.0"
+	instrumentationName    = "github.com/Marz32onE/nats.trace.go/natstrace"
+	instrumentationVersion = "0.3.0"
 )
 
 type options struct {
@@ -19,16 +19,14 @@ type options struct {
 // Option configures the tracing wrapper.
 type Option func(*options)
 
-// WithTracerProvider sets the TracerProvider used to create spans.
-// Defaults to otel.GetTracerProvider().
+// WithTracerProvider sets the TracerProvider. Defaults to otel.GetTracerProvider().
 func WithTracerProvider(tp trace.TracerProvider) Option {
 	return func(o *options) {
 		o.tracerProvider = tp
 	}
 }
 
-// WithPropagator sets the TextMapPropagator used to inject/extract trace
-// context into/from NATS message headers. Defaults to otel.GetTextMapPropagator().
+// WithPropagator sets the TextMapPropagator for inject/extract. Defaults to otel.GetTextMapPropagator().
 func WithPropagator(p propagation.TextMapPropagator) Option {
 	return func(o *options) {
 		o.propagator = p

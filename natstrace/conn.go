@@ -7,18 +7,19 @@ import (
 	nats "github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
 const messagingSystem = "nats"
 
-// MsgHandler is the callback for traced subscriptions (like nats.MsgHandler but with context).
-// The context carries the extracted trace from the incoming message headers.
+// MsgHandler is the callback for subscriptions. Same as nats.MsgHandler but with context
+// that carries the trace extracted from the message headers.
 type MsgHandler func(ctx context.Context, msg *nats.Msg)
 
-// Conn is a tracing-aware wrapper around *nats.Conn. API mirrors nats.Conn: Publish, PublishMsg,
-// Subscribe, QueueSubscribe, Close, Drain, NatsConn. All publish/subscribe use W3C trace propagation.
+// Conn is a tracing-aware wrapper around *nats.Conn. API mirrors nats.Conn; the only
+// difference is Publish/PublishMsg take context.Context and handlers receive (ctx, msg).
 type Conn struct {
 	nc     *nats.Conn
 	tracer trace.Tracer
@@ -34,22 +35,27 @@ func newConn(nc *nats.Conn, opts ...Option) *Conn {
 	}
 }
 
-// NatsConn returns the underlying *nats.Conn (same as using the original nats package).
+// TraceContext returns the tracer and propagator used by this Conn. Used by jetstreamtrace.
+func (c *Conn) TraceContext() (trace.Tracer, propagation.TextMapPropagator) {
+	return c.tracer, c.opts.propagator
+}
+
+// NatsConn returns the underlying *nats.Conn (same as nats package).
 func (c *Conn) NatsConn() *nats.Conn {
 	return c.nc
 }
 
-// Drain flushes and closes the connection, waiting for pending work.
-func (c *Conn) Drain() error {
-	return c.nc.Drain()
-}
-
-// Close closes the underlying connection.
+// Close closes the connection (same as nats.Conn.Close).
 func (c *Conn) Close() {
 	c.nc.Close()
 }
 
-// Publish publishes data to subject with trace context in headers (like nats.Conn.Publish + propagation).
+// Drain flushes and closes (same as nats.Conn.Drain).
+func (c *Conn) Drain() error {
+	return c.nc.Drain()
+}
+
+// Publish publishes data to subject. Same as nats.Conn.Publish but accepts context for trace.
 func (c *Conn) Publish(ctx context.Context, subject string, data []byte) error {
 	msg := &nats.Msg{
 		Subject: subject,
@@ -59,7 +65,7 @@ func (c *Conn) Publish(ctx context.Context, subject string, data []byte) error {
 	return c.PublishMsg(ctx, msg)
 }
 
-// PublishMsg publishes the message with trace context in msg.Header (like nats.Conn.PublishMsg + propagation).
+// PublishMsg publishes the message. Same as nats.Conn.PublishMsg but accepts context for trace.
 func (c *Conn) PublishMsg(ctx context.Context, msg *nats.Msg) error {
 	if msg.Header == nil {
 		msg.Header = make(nats.Header)
@@ -70,7 +76,7 @@ func (c *Conn) PublishMsg(ctx context.Context, msg *nats.Msg) error {
 		trace.WithAttributes(publishAttrs(msg)...),
 	)
 	defer span.End()
-	c.opts.propagator.Inject(ctx, headerCarrier{msg.Header})
+	c.opts.propagator.Inject(ctx, &HeaderCarrier{H: msg.Header})
 	if err := c.nc.PublishMsg(msg); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -79,33 +85,7 @@ func (c *Conn) PublishMsg(ctx context.Context, msg *nats.Msg) error {
 	return nil
 }
 
-// PublishJetStream publishes to JetStream with trace context in headers.
-func (c *Conn) PublishJetStream(ctx context.Context, subject string, data []byte) error {
-	js, err := c.nc.JetStream()
-	if err != nil {
-		return err
-	}
-	msg := &nats.Msg{
-		Subject: subject,
-		Data:    data,
-		Header:  make(nats.Header),
-	}
-	ctx, span := c.tracer.Start(ctx, subject+" publish",
-		trace.WithSpanKind(trace.SpanKindProducer),
-		trace.WithAttributes(publishAttrs(msg)...),
-	)
-	defer span.End()
-	c.opts.propagator.Inject(ctx, headerCarrier{msg.Header})
-	_, err = js.PublishMsg(msg)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return err
-	}
-	return nil
-}
-
-// Request sends a request with trace context and waits for a reply (like nats.Conn.Request + propagation).
+// Request sends a request and waits for reply. Same as nats.Conn.Request but accepts context.
 func (c *Conn) Request(ctx context.Context, subject string, data []byte, timeout time.Duration) (*nats.Msg, error) {
 	msg := &nats.Msg{
 		Subject: subject,
@@ -122,7 +102,7 @@ func (c *Conn) Request(ctx context.Context, subject string, data []byte, timeout
 		),
 	)
 	defer span.End()
-	c.opts.propagator.Inject(ctx, headerCarrier{msg.Header})
+	c.opts.propagator.Inject(ctx, &HeaderCarrier{H: msg.Header})
 	reply, err := c.nc.RequestMsgWithContext(ctx, msg)
 	if err != nil {
 		span.RecordError(err)
@@ -133,39 +113,24 @@ func (c *Conn) Request(ctx context.Context, subject string, data []byte, timeout
 	return reply, nil
 }
 
-// Subscribe subscribes to subject (like nats.Conn.Subscribe); handler receives context with extracted trace.
+// Subscribe subscribes to subject. Handler receives (ctx, msg) with ctx carrying extracted trace.
 func (c *Conn) Subscribe(subject string, handler MsgHandler) (*nats.Subscription, error) {
 	return c.nc.Subscribe(subject, c.wrapHandler(subject, "", handler))
 }
 
-// QueueSubscribe is the queue-group variant (like nats.Conn.QueueSubscribe).
+// QueueSubscribe is the queue-group variant. Handler receives (ctx, msg).
 func (c *Conn) QueueSubscribe(subject, queue string, handler MsgHandler) (*nats.Subscription, error) {
 	return c.nc.QueueSubscribe(subject, queue, c.wrapHandler(subject, queue, handler))
 }
 
-// SubscribeJetStream subscribes to a JetStream subject with DeliverNew(); handler may call msg.Ack().
-func (c *Conn) SubscribeJetStream(subject string, handler MsgHandler) (*nats.Subscription, error) {
-	js, err := c.nc.JetStream()
-	if err != nil {
-		return nil, err
-	}
-	return js.Subscribe(subject, c.wrapHandler(subject, "", handler), nats.DeliverNew())
-}
-
 func (c *Conn) wrapHandler(subject, queue string, handler MsgHandler) nats.MsgHandler {
 	return func(msg *nats.Msg) {
-		msgCtx := c.opts.propagator.Extract(context.Background(), headerCarrier{msg.Header})
+		msgCtx := c.opts.propagator.Extract(context.Background(), &HeaderCarrier{H: msg.Header})
 		spanName := subject + " receive"
-		opts := []trace.SpanStartOption{
+		ctx, span := c.tracer.Start(msgCtx, spanName,
 			trace.WithSpanKind(trace.SpanKindConsumer),
 			trace.WithAttributes(receiveAttrs(msg, queue)...),
-		}
-		// Fan-out: use link only (no parent from message) so multiple consumers do not
-		// become N children of one producer in the same trace. Per messaging spec.
-		if sc := trace.SpanFromContext(msgCtx).SpanContext(); sc.IsValid() {
-			opts = append(opts, trace.WithLinks(trace.Link{SpanContext: sc}))
-		}
-		ctx, span := c.tracer.Start(context.Background(), spanName, opts...)
+		)
 		defer span.End()
 		handler(ctx, msg)
 	}

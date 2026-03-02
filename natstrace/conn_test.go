@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	natstrace "github.com/Marz32onE/nats.trace.go"
+	natstrace "github.com/Marz32onE/nats.trace.go/natstrace"
 	nats "github.com/nats-io/nats.go"
 	natssrv "github.com/nats-io/nats-server/v2/server"
 	"go.opentelemetry.io/otel/attribute"
@@ -94,24 +94,12 @@ func TestW3CPropagationRoundtrip(t *testing.T) {
 		t.Fatal("timeout")
 	}
 
-	carrier := headerCarrier(h)
+	carrier := natstrace.HeaderCarrier{H: h}
 	extracted := prop.Extract(context.Background(), carrier)
 	gotTraceID := oteltrace.SpanFromContext(extracted).SpanContext().TraceID()
 	if gotTraceID != wantTraceID {
 		t.Errorf("traceID: got %s, want %s", gotTraceID, wantTraceID)
 	}
-}
-
-type headerCarrier nats.Header
-
-func (c headerCarrier) Get(key string) string { return nats.Header(c).Get(key) }
-func (c headerCarrier) Set(key, val string)   { nats.Header(c).Set(key, val) }
-func (c headerCarrier) Keys() []string {
-	var keys []string
-	for k := range c {
-		keys = append(keys, k)
-	}
-	return keys
 }
 
 func TestPublishCreatesProducerSpan(t *testing.T) {
@@ -207,11 +195,12 @@ func TestSubscribeExtractsTraceContext(t *testing.T) {
 	if want := subject + " receive"; consumerSpan.Name() != want {
 		t.Errorf("consumer span name: got %q, want %q", consumerSpan.Name(), want)
 	}
-	// With link-only (fan-out), consumer is in its own trace and links to producer.
 	if producer != nil {
-		links := consumerSpan.Links()
-		if len(links) != 1 || links[0].SpanContext.TraceID() != producer.SpanContext().TraceID() {
-			t.Errorf("consumer should have one link to producer trace")
+		if consumerSpan.SpanContext().TraceID() != producer.SpanContext().TraceID() {
+			t.Errorf("consumer should be in same trace as producer")
+		}
+		if consumerSpan.Parent().SpanID() != producer.SpanContext().SpanID() {
+			t.Errorf("consumer should be child of producer span")
 		}
 	}
 }
@@ -282,13 +271,10 @@ func TestSubscribeConsumerSpanLinkedToProducer(t *testing.T) {
 	if producer == nil || consumer == nil {
 		t.Fatalf("missing spans: producer=%v consumer=%v", producer, consumer)
 	}
-	// Fan-out: consumer uses link only (no parent), so consumer is in its own trace.
-	links := consumer.Links()
-	if len(links) != 1 {
-		t.Fatalf("consumer should have one link to producer: got %d links", len(links))
+	if consumer.SpanContext().TraceID() != producer.SpanContext().TraceID() {
+		t.Errorf("consumer should be in same trace as producer")
 	}
-	linkSc := links[0].SpanContext
-	if linkSc.TraceID() != producer.SpanContext().TraceID() || linkSc.SpanID() != producer.SpanContext().SpanID() {
-		t.Errorf("consumer link should point to producer: link=%s producer=%s", linkSc.SpanID(), producer.SpanContext().SpanID())
+	if consumer.Parent().SpanID() != producer.SpanContext().SpanID() {
+		t.Errorf("consumer should be child of producer span")
 	}
 }

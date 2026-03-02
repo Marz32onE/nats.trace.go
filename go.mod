@@ -1,6 +1,6 @@
 module github.com/Marz32onE/nats.trace.go
 
-go 1.24.13
+go 1.24.0
 
 require (
 	github.com/nats-io/nats-server/v2 v2.12.4
