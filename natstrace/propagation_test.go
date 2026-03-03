@@ -3,8 +3,9 @@ package natstrace_test
 import (
 	"testing"
 
-	natstrace "github.com/Marz32onE/natstrace/natstrace"
 	nats "github.com/nats-io/nats.go"
+
+	natstrace "github.com/Marz32onE/natstrace/natstrace"
 )
 
 func TestHeaderCarrier_NilHeader(t *testing.T) {

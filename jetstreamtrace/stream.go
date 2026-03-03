@@ -3,8 +3,9 @@ package jetstreamtrace
 import (
 	"context"
 
-	"github.com/Marz32onE/natstrace/natstrace"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/Marz32onE/natstrace/natstrace"
 )
 
 // Stream mirrors jetstream.Stream for managing consumers with tracing.

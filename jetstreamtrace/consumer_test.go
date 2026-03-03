@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Marz32onE/natstrace/jetstreamtrace"
-	natstrace "github.com/Marz32onE/natstrace/natstrace"
 	natssrv "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
@@ -14,15 +12,18 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
+
+	"github.com/Marz32onE/natstrace/jetstreamtrace"
+	natstrace "github.com/Marz32onE/natstrace/natstrace"
 )
 
 func startJetStreamServer(t *testing.T) string {
 	t.Helper()
 	opts := &natssrv.Options{
-		Host:     "127.0.0.1",
-		Port:     -1,
+		Host:      "127.0.0.1",
+		Port:      -1,
 		JetStream: true,
-		StoreDir: t.TempDir(),
+		StoreDir:  t.TempDir(),
 	}
 	s, err := natssrv.NewServer(opts)
 	if err != nil {

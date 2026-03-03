@@ -3,13 +3,14 @@ package jetstreamtrace
 import (
 	"context"
 
-	"github.com/Marz32onE/natstrace/natstrace"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/Marz32onE/natstrace/natstrace"
 )
 
 const messagingSystem = "nats"
@@ -51,9 +52,9 @@ type ConsumerConfig = jetstream.ConsumerConfig
 type AckPolicy = jetstream.AckPolicy
 
 const (
-	AckExplicitPolicy  = jetstream.AckExplicitPolicy
-	AckNonePolicy      = jetstream.AckNonePolicy
-	AckAllPolicy       = jetstream.AckAllPolicy
+	AckExplicitPolicy = jetstream.AckExplicitPolicy
+	AckNonePolicy     = jetstream.AckNonePolicy
+	AckAllPolicy      = jetstream.AckAllPolicy
 )
 
 // JetStream is the main interface for JetStream with tracing. Aligns with jetstream.JetStream
@@ -84,7 +85,7 @@ func New(conn *natstrace.Conn) (JetStream, error) {
 func (j *jsImpl) Publish(ctx context.Context, subject string, data []byte, opts ...jetstream.PublishOpt) (*PubAck, error) {
 	msg := &nats.Msg{
 		Subject: subject,
-		Data:   data,
+		Data:    data,
 		Header:  make(nats.Header),
 	}
 	return j.PublishMsg(ctx, msg, opts...)

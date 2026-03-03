@@ -3,12 +3,13 @@ package jetstreamtrace
 import (
 	"context"
 
-	"github.com/Marz32onE/natstrace/natstrace"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/Marz32onE/natstrace/natstrace"
 )
 
 // MessageHandler is the callback for Consume. Same as jetstream MessageHandler but receives
@@ -159,8 +160,8 @@ func receiveAttrs(msg jetstream.Msg) []attribute.KeyValue {
 }
 
 type messageBatchTrace struct {
-	ch   chan MsgWithContext
-	raw  jetstream.MessageBatch
+	ch  chan MsgWithContext
+	raw jetstream.MessageBatch
 }
 
 func (m *messageBatchTrace) MessagesWithContext() <-chan MsgWithContext {

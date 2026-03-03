@@ -5,14 +5,15 @@ import (
 	"testing"
 	"time"
 
-	natstrace "github.com/Marz32onE/natstrace/natstrace"
-	nats "github.com/nats-io/nats.go"
 	natssrv "github.com/nats-io/nats-server/v2/server"
+	nats "github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
+
+	natstrace "github.com/Marz32onE/natstrace/natstrace"
 )
 
 func newTestProvider() (*trace.TracerProvider, *tracetest.SpanRecorder) {
