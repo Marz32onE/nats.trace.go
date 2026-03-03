@@ -278,3 +278,56 @@ func TestSubscribeConsumerSpanLinkedToProducer(t *testing.T) {
 		t.Errorf("consumer should be child of producer span")
 	}
 }
+
+func TestRequestCreatesProducerSpanAndReturnsReply(t *testing.T) {
+	url := startServer(t)
+	tp, sr := newTestProvider()
+	conn, err := natstrace.Connect(url, nil, natstrace.WithTracerProvider(tp))
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer conn.Close()
+
+	subject := "req.reply"
+	_, err = conn.NatsConn().Subscribe(subject, func(msg *nats.Msg) {
+		_ = msg.Respond([]byte("pong"))
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	reply, err := conn.Request(context.Background(), subject, []byte("ping"), 2*time.Second)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if string(reply.Data) != "pong" {
+		t.Errorf("got reply %q", reply.Data)
+	}
+
+	spans := sr.Ended()
+	producer := findSpanByKind(spans, oteltrace.SpanKindProducer)
+	if producer == nil {
+		t.Fatal("no producer span")
+	}
+	if want := subject + " publish"; producer.Name() != want {
+		t.Errorf("span name: got %q, want %q", producer.Name(), want)
+	}
+}
+
+func TestTraceContextReturnsTracerAndPropagator(t *testing.T) {
+	url := startServer(t)
+	tp := trace.NewTracerProvider()
+	conn, err := natstrace.Connect(url, nil, natstrace.WithTracerProvider(tp))
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer conn.Close()
+
+	tracer, prop := conn.TraceContext()
+	if tracer == nil {
+		t.Error("TraceContext() tracer should not be nil")
+	}
+	if prop == nil {
+		t.Error("TraceContext() propagator should not be nil")
+	}
+}

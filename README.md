@@ -135,6 +135,21 @@ ctx, msg, err := iter.Next()
 
 ## API notes
 
-- **Sync only**: Async publish (e.g. `PublishAsync`) is not wrapped. JetStream batch pull (`Fetch`, `FetchBytes`, `FetchNoWait`) is not provided so each message can have its own consumer span; use `Consume`, `Messages()`, or `Next()` instead.
-- **Types**: `jetstreamtrace` re-exports types such as `Msg`, `PubAck`, `StreamConfig`, `ConsumerConfig`, `ConsumerInfo`, `ConsumeContext`, `MessagesContext` so callers need not import `jetstream` for common types.
+- **Sync only**: Async publish (e.g. `PublishAsync`) is not wrapped.
+- **Fetch / FetchBytes / FetchNoWait**: Single-fetch batch APIs return `MessageBatch`; iterate `MessagesWithContext()` for `(ctx, msg)` with trace and consumer span per message (same semantics as `Consume` / `Messages()`).
+- **Types**: `jetstreamtrace` re-exports types such as `Msg`, `PubAck`, `StreamConfig`, `ConsumerConfig`, `ConsumerInfo`, `ConsumeContext`, `MessagesContext`, `MessageBatch`, `MsgWithContext` so callers need not import `jetstream` for common types.
 - **HeaderCarrier**: `natstrace.HeaderCarrier` adapts `nats.Header` to `propagation.TextMapCarrier` for custom inject/extract (e.g. in WebSocket or HTTP bridges).
+
+---
+
+## Project layout
+
+Packages live at repo root: `natstrace` (Core NATS) and `jetstreamtrace` (JetStream). This follows Go’s usual convention of keeping library packages at the module root; a top-level `pkg/` is not used so import paths stay short (`github.com/Marz32onE/natstrace/natstrace`, `.../jetstreamtrace`).
+
+---
+
+## Development
+
+- **Tests**: `go test ./...`
+- **Lint**: [golangci-lint](https://golangci-lint.run/) — run `golangci-lint run ./...` locally (install via `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`). CI runs tests and lint on push/PR to `main` and `feat/package-nats-and-jetstream`.
+- **Pre-commit** (optional): Add a [pre-commit](https://pre-commit.com/) hook that runs `go test ./...` and `golangci-lint run ./...` before commit; config is not included in repo, so set it up locally if desired.
