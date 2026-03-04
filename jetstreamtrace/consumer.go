@@ -101,6 +101,9 @@ func (c *consumerImpl) Messages(opts ...jetstream.PullMessagesOpt) (MessagesCont
 }
 
 func (c *consumerImpl) Next(ctx context.Context, opts ...jetstream.FetchOpt) (context.Context, Msg, error) {
+	if ctx != nil {
+		opts = append([]jetstream.FetchOpt{jetstream.FetchContext(ctx)}, opts...)
+	}
 	msg, err := c.c.Next(opts...)
 	if err != nil {
 		return nil, nil, err

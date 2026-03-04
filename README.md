@@ -32,6 +32,7 @@ go get github.com/Marz32onE/natstrace
 
 ```go
 import (
+    "go.opentelemetry.io/otel"
     natstrace "github.com/Marz32onE/natstrace/natstrace"
     "go.opentelemetry.io/otel/propagation"
 )
@@ -144,7 +145,7 @@ ctx, msg, err := iter.Next()
 
 ## Project layout
 
-Packages live at repo root: `natstrace` (Core NATS) and `jetstreamtrace` (JetStream). This follows Go’s usual convention of keeping library packages at the module root; a top-level `pkg/` is not used so import paths stay short (`github.com/Marz32onE/natstrace/natstrace`, `.../jetstreamtrace`).
+Packages live in top-level directories at the module root: `./natstrace` (Core NATS) and `./jetstreamtrace` (JetStream). The module path is `github.com/Marz32onE/natstrace`, so import paths are `github.com/Marz32onE/natstrace/natstrace` and `github.com/Marz32onE/natstrace/jetstreamtrace`.
 
 ---
 

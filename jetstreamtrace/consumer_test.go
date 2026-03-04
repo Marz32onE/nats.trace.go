@@ -112,36 +112,43 @@ func TestFetchReturnsMessagesWithTraceContext(t *testing.T) {
 		t.Fatalf("Publish: %v", err)
 	}
 
-	// Give JetStream a moment to persist
-	time.Sleep(200 * time.Millisecond)
-
-	// Fetch batch and iterate with trace (short wait so test doesn't hang)
-	batch, err := cons.Fetch(5, jetstream.FetchMaxWait(5*time.Second))
-	if err != nil {
-		t.Fatalf("Fetch: %v", err)
-	}
-
+	// Fetch with retries until message is available (deterministic, avoids flaky fixed sleep)
 	var received int
-	for m := range batch.MessagesWithContext() {
-		received++
-		if string(m.Msg.Data()) != "hello fetch" {
-			t.Errorf("got data %q", m.Msg.Data())
+	var batch jetstreamtrace.MessageBatch
+	for attempt := 0; attempt < 30; attempt++ {
+		var ferr error
+		batch, ferr = cons.Fetch(5, jetstream.FetchMaxWait(300*time.Millisecond))
+		if ferr != nil {
+			t.Fatalf("Fetch: %v", ferr)
 		}
-		// Context should carry extracted trace (same as producer)
-		span := oteltrace.SpanFromContext(m.Ctx)
-		if !span.SpanContext().TraceID().IsValid() {
-			t.Error("context should have valid trace ID")
+		for m := range batch.MessagesWithContext() {
+			received++
+			if string(m.Msg.Data()) != "hello fetch" {
+				t.Errorf("got data %q", m.Msg.Data())
+			}
+			// Context should carry extracted trace (same as producer)
+			span := oteltrace.SpanFromContext(m.Ctx)
+			if !span.SpanContext().TraceID().IsValid() {
+				t.Error("context should have valid trace ID")
+			}
+			if span.SpanContext().TraceID() != pubSpan.SpanContext().TraceID() {
+				t.Error("consumer context should be in same trace as producer")
+			}
+			_ = m.Msg.Ack()
 		}
-		if span.SpanContext().TraceID() != pubSpan.SpanContext().TraceID() {
-			t.Error("consumer context should be in same trace as producer")
+		if batch.Error() != nil {
+			t.Logf("Fetch attempt %d: %v", attempt+1, batch.Error())
 		}
-		_ = m.Msg.Ack()
+		if received == 1 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	if received != 1 {
-		t.Errorf("expected 1 message, got %d", received)
+		t.Errorf("expected 1 message, got %d after retries", received)
 	}
-	if err := batch.Error(); err != nil {
-		t.Errorf("batch error: %v", err)
+	if batch != nil && batch.Error() != nil {
+		t.Errorf("batch error: %v", batch.Error())
 	}
 
 	// Assert consumer span has messaging.consumer.name
@@ -203,7 +210,8 @@ func TestConsumeTraceContext(t *testing.T) {
 	defer cc.Stop()
 
 	tracer := tp.Tracer("pub")
-	pubCtx, _ := tracer.Start(ctx, "parent")
+	pubCtx, pubSpan := tracer.Start(ctx, "parent")
+	defer pubSpan.End()
 	_, _ = js.Publish(pubCtx, "consume.msg", []byte("hi"))
 	time.Sleep(300 * time.Millisecond)
 	select {

@@ -86,13 +86,16 @@ func (c *Conn) PublishMsg(ctx context.Context, msg *nats.Msg) error {
 }
 
 // Request sends a request and waits for reply. Same as nats.Conn.Request but accepts context.
+// The timeout parameter is applied to the request; the call returns when the reply is received or timeout is reached.
 func (c *Conn) Request(ctx context.Context, subject string, data []byte, timeout time.Duration) (*nats.Msg, error) {
 	msg := &nats.Msg{
 		Subject: subject,
 		Data:    data,
 		Header:  make(nats.Header),
 	}
-	ctx, span := c.tracer.Start(ctx, subject+" publish",
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	reqCtx, span := c.tracer.Start(reqCtx, subject+" publish",
 		trace.WithSpanKind(trace.SpanKindProducer),
 		trace.WithAttributes(
 			semconv.MessagingSystemKey.String(messagingSystem),
@@ -102,8 +105,8 @@ func (c *Conn) Request(ctx context.Context, subject string, data []byte, timeout
 		),
 	)
 	defer span.End()
-	c.opts.propagator.Inject(ctx, &HeaderCarrier{H: msg.Header})
-	reply, err := c.nc.RequestMsgWithContext(ctx, msg)
+	c.opts.propagator.Inject(reqCtx, &HeaderCarrier{H: msg.Header})
+	reply, err := c.nc.RequestMsgWithContext(reqCtx, msg)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
