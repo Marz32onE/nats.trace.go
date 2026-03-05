@@ -76,12 +76,16 @@ func (c *consumerImpl) Consume(handler MessageHandler, opts ...jetstream.PullCon
 			h = make(nats.Header)
 		}
 		msgCtx := prop.Extract(context.Background(), &natstrace.HeaderCarrier{H: h})
-		spanName := msg.Subject() + " receive"
-		attrs := append(receiveAttrs(msg), attribute.String(attrConsumerName, c.consumerName))
-		ctx, span := tracer.Start(msgCtx, spanName,
+		spanName := "process " + msg.Subject()
+		attrs := append(receiveAttrs(msg, "process"), attribute.String(attrConsumerName, c.consumerName))
+		startOpts := []trace.SpanStartOption{
 			trace.WithSpanKind(trace.SpanKindConsumer),
 			trace.WithAttributes(attrs...),
-		)
+		}
+		if sc := trace.SpanContextFromContext(msgCtx); sc.IsValid() {
+			startOpts = append(startOpts, trace.WithLinks(trace.LinkFromContext(msgCtx)))
+		}
+		ctx, span := tracer.Start(context.Background(), spanName, startOpts...)
 		defer span.End()
 		handler(ctx, msg)
 	}
@@ -149,12 +153,13 @@ func (c *consumerImpl) CachedInfo() *ConsumerInfo {
 	return c.c.CachedInfo()
 }
 
-func receiveAttrs(msg jetstream.Msg) []attribute.KeyValue {
+// receiveAttrs builds consumer span attributes. opType is "process" (push) or "receive" (pull).
+func receiveAttrs(msg jetstream.Msg, opType string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		semconv.MessagingSystemKey.String(messagingSystem),
 		semconv.MessagingDestinationNameKey.String(msg.Subject()),
-		semconv.MessagingOperationTypeReceive,
-		semconv.MessagingOperationNameKey.String("receive"),
+		attribute.String(string(semconv.MessagingOperationTypeKey), opType),
+		semconv.MessagingOperationNameKey.String(opType),
 	}
 	if d := msg.Data(); len(d) > 0 {
 		attrs = append(attrs, semconv.MessagingMessageBodySize(len(d)))
@@ -191,12 +196,16 @@ func wrapMessageBatch(conn *natstrace.Conn, consumerName string, raw jetstream.M
 				h = make(nats.Header)
 			}
 			msgCtx := prop.Extract(context.Background(), &natstrace.HeaderCarrier{H: h})
-			spanName := msg.Subject() + " receive"
-			attrs := append(receiveAttrs(msg), attribute.String(attrConsumerName, consumerName))
-			ctx, span := tracer.Start(msgCtx, spanName,
+			spanName := "receive " + msg.Subject()
+			attrs := append(receiveAttrs(msg, "receive"), attribute.String(attrConsumerName, consumerName))
+			opts := []trace.SpanStartOption{
 				trace.WithSpanKind(trace.SpanKindConsumer),
 				trace.WithAttributes(attrs...),
-			)
+			}
+			if sc := trace.SpanContextFromContext(msgCtx); sc.IsValid() {
+				opts = append(opts, trace.WithLinks(trace.LinkFromContext(msgCtx)))
+			}
+			ctx, span := tracer.Start(context.Background(), spanName, opts...)
 			lastSpan = span
 			ch <- MsgWithContext{Ctx: ctx, Msg: msg}
 		}
@@ -239,12 +248,16 @@ func (m *messagesContextImpl) Next(opts ...jetstream.NextOpt) (context.Context, 
 	}
 	tracer, prop := m.conn.TraceContext()
 	msgCtx := prop.Extract(context.Background(), &natstrace.HeaderCarrier{H: h})
-	spanName := msg.Subject() + " receive"
-	attrs := append(receiveAttrs(msg), attribute.String(attrConsumerName, m.consumerName))
-	ctx, span := tracer.Start(msgCtx, spanName,
+	spanName := "receive " + msg.Subject()
+	attrs := append(receiveAttrs(msg, "receive"), attribute.String(attrConsumerName, m.consumerName))
+	startOpts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindConsumer),
 		trace.WithAttributes(attrs...),
-	)
+	}
+	if sc := trace.SpanContextFromContext(msgCtx); sc.IsValid() {
+		startOpts = append(startOpts, trace.WithLinks(trace.LinkFromContext(msgCtx)))
+	}
+	ctx, span := tracer.Start(context.Background(), spanName, startOpts...)
 	m.lastSpan = span
 	return ctx, msg, nil
 }

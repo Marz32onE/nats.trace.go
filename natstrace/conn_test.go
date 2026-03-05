@@ -122,7 +122,7 @@ func TestPublishCreatesProducerSpan(t *testing.T) {
 		t.Fatalf("expected 1 span, got %d", len(spans))
 	}
 	s := spans[0]
-	if want := subject + " publish"; s.Name() != want {
+	if want := "send " + subject; s.Name() != want {
 		t.Errorf("span name: got %q, want %q", s.Name(), want)
 	}
 	if s.SpanKind() != oteltrace.SpanKindProducer {
@@ -193,15 +193,18 @@ func TestSubscribeExtractsTraceContext(t *testing.T) {
 	if consumerSpan == nil {
 		t.Fatal("no consumer span")
 	}
-	if want := subject + " receive"; consumerSpan.Name() != want {
+	if want := "process " + subject; consumerSpan.Name() != want {
 		t.Errorf("consumer span name: got %q, want %q", consumerSpan.Name(), want)
 	}
 	if producer != nil {
-		if consumerSpan.SpanContext().TraceID() != producer.SpanContext().TraceID() {
-			t.Errorf("consumer should be in same trace as producer")
-		}
-		if consumerSpan.Parent().SpanID() != producer.SpanContext().SpanID() {
-			t.Errorf("consumer should be child of producer span")
+		// Per OTel messaging semconv: correlate only via span link (no parent-child).
+		if n := len(consumerSpan.Links()); n != 1 {
+			t.Errorf("consumer span should have 1 link to producer, got %d", n)
+		} else {
+			linkCtx := consumerSpan.Links()[0].SpanContext
+			if linkCtx.TraceID() != producer.SpanContext().TraceID() || linkCtx.SpanID() != producer.SpanContext().SpanID() {
+				t.Errorf("consumer link should point to producer span (trace_id=%s span_id=%s)", linkCtx.TraceID(), linkCtx.SpanID())
+			}
 		}
 	}
 }
@@ -272,11 +275,14 @@ func TestSubscribeConsumerSpanLinkedToProducer(t *testing.T) {
 	if producer == nil || consumer == nil {
 		t.Fatalf("missing spans: producer=%v consumer=%v", producer, consumer)
 	}
-	if consumer.SpanContext().TraceID() != producer.SpanContext().TraceID() {
-		t.Errorf("consumer should be in same trace as producer")
-	}
-	if consumer.Parent().SpanID() != producer.SpanContext().SpanID() {
-		t.Errorf("consumer should be child of producer span")
+	// OTel messaging semconv: correlate only via span link (no parent-child).
+	if n := len(consumer.Links()); n != 1 {
+		t.Errorf("consumer span should have 1 link to producer, got %d", n)
+	} else {
+		linkCtx := consumer.Links()[0].SpanContext
+		if linkCtx.TraceID() != producer.SpanContext().TraceID() || linkCtx.SpanID() != producer.SpanContext().SpanID() {
+			t.Errorf("consumer link should point to producer span (trace_id=%s span_id=%s)", linkCtx.TraceID(), linkCtx.SpanID())
+		}
 	}
 }
 
@@ -310,7 +316,7 @@ func TestRequestCreatesProducerSpanAndReturnsReply(t *testing.T) {
 	if producer == nil {
 		t.Fatal("no producer span")
 	}
-	if want := subject + " publish"; producer.Name() != want {
+	if want := "send " + subject; producer.Name() != want {
 		t.Errorf("span name: got %q, want %q", producer.Name(), want)
 	}
 }

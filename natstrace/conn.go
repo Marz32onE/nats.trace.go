@@ -66,11 +66,13 @@ func (c *Conn) Publish(ctx context.Context, subject string, data []byte) error {
 }
 
 // PublishMsg publishes the message. Same as nats.Conn.PublishMsg but accepts context for trace.
+// Per OTel messaging semconv: "Send" span with creation context injected into message; consumer
+// spans link to this context. Span name is "{operation.name} {destination}".
 func (c *Conn) PublishMsg(ctx context.Context, msg *nats.Msg) error {
 	if msg.Header == nil {
 		msg.Header = make(nats.Header)
 	}
-	spanName := msg.Subject + " publish"
+	spanName := "send " + msg.Subject
 	ctx, span := c.tracer.Start(ctx, spanName,
 		trace.WithSpanKind(trace.SpanKindProducer),
 		trace.WithAttributes(publishAttrs(msg)...),
@@ -95,12 +97,13 @@ func (c *Conn) Request(ctx context.Context, subject string, data []byte, timeout
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	reqCtx, span := c.tracer.Start(reqCtx, subject+" publish",
+	spanName := "send " + subject
+	reqCtx, span := c.tracer.Start(reqCtx, spanName,
 		trace.WithSpanKind(trace.SpanKindProducer),
 		trace.WithAttributes(
 			semconv.MessagingSystemKey.String(messagingSystem),
 			semconv.MessagingDestinationNameKey.String(subject),
-			semconv.MessagingOperationTypePublish,
+			attribute.String(string(semconv.MessagingOperationTypeKey), "send"),
 			semconv.MessagingOperationNameKey.String("publish"),
 		),
 	)
@@ -129,11 +132,16 @@ func (c *Conn) QueueSubscribe(subject, queue string, handler MsgHandler) (*nats.
 func (c *Conn) wrapHandler(subject, queue string, handler MsgHandler) nats.MsgHandler {
 	return func(msg *nats.Msg) {
 		msgCtx := c.opts.propagator.Extract(context.Background(), &HeaderCarrier{H: msg.Header})
-		spanName := subject + " receive"
-		ctx, span := c.tracer.Start(msgCtx, spanName,
+		// Per OTel messaging semconv: correlate producer and consumer only via span link (no parent-child).
+		spanName := "process " + subject
+		opts := []trace.SpanStartOption{
 			trace.WithSpanKind(trace.SpanKindConsumer),
-			trace.WithAttributes(receiveAttrs(msg, queue)...),
-		)
+			trace.WithAttributes(receiveAttrs(msg, queue, "process")...),
+		}
+		if sc := trace.SpanContextFromContext(msgCtx); sc.IsValid() {
+			opts = append(opts, trace.WithLinks(trace.LinkFromContext(msgCtx)))
+		}
+		ctx, span := c.tracer.Start(context.Background(), spanName, opts...)
 		defer span.End()
 		handler(ctx, msg)
 	}
@@ -143,7 +151,7 @@ func publishAttrs(msg *nats.Msg) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		semconv.MessagingSystemKey.String(messagingSystem),
 		semconv.MessagingDestinationNameKey.String(msg.Subject),
-		semconv.MessagingOperationTypePublish,
+		attribute.String(string(semconv.MessagingOperationTypeKey), "send"),
 		semconv.MessagingOperationNameKey.String("publish"),
 	}
 	if len(msg.Data) > 0 {
@@ -155,12 +163,13 @@ func publishAttrs(msg *nats.Msg) []attribute.KeyValue {
 	return attrs
 }
 
-func receiveAttrs(msg *nats.Msg, queue string) []attribute.KeyValue {
+// receiveAttrs builds consumer span attributes. opType is "process" (push) or "receive" (pull).
+func receiveAttrs(msg *nats.Msg, queue string, opType string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		semconv.MessagingSystemKey.String(messagingSystem),
 		semconv.MessagingDestinationNameKey.String(msg.Subject),
-		semconv.MessagingOperationTypeReceive,
-		semconv.MessagingOperationNameKey.String("receive"),
+		attribute.String(string(semconv.MessagingOperationTypeKey), opType),
+		semconv.MessagingOperationNameKey.String(opType),
 	}
 	if len(msg.Data) > 0 {
 		attrs = append(attrs, semconv.MessagingMessageBodySize(len(msg.Data)))

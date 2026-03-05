@@ -27,7 +27,7 @@ func jetstreamTracePublishAttrs(msg *nats.Msg) trace.SpanStartOption {
 	attrs := []attribute.KeyValue{
 		semconv.MessagingSystemKey.String(messagingSystem),
 		semconv.MessagingDestinationNameKey.String(msg.Subject),
-		semconv.MessagingOperationTypePublish,
+		attribute.String(string(semconv.MessagingOperationTypeKey), "send"),
 		semconv.MessagingOperationNameKey.String("publish"),
 	}
 	if len(msg.Data) > 0 {
@@ -96,7 +96,8 @@ func (j *jsImpl) PublishMsg(ctx context.Context, msg *nats.Msg, opts ...jetstrea
 	if msg.Header == nil {
 		msg.Header = make(nats.Header)
 	}
-	ctx, span := tracer.Start(ctx, msg.Subject+" publish",
+	spanName := "send " + msg.Subject
+	ctx, span := tracer.Start(ctx, spanName,
 		jetstreamTraceSpanKindProducer(),
 		jetstreamTracePublishAttrs(msg),
 	)

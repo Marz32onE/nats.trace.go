@@ -126,13 +126,10 @@ func TestFetchReturnsMessagesWithTraceContext(t *testing.T) {
 			if string(m.Msg.Data()) != "hello fetch" {
 				t.Errorf("got data %q", m.Msg.Data())
 			}
-			// Context should carry extracted trace (same as producer)
+			// Context carries consumer span (correlation to producer is via link only)
 			span := oteltrace.SpanFromContext(m.Ctx)
 			if !span.SpanContext().TraceID().IsValid() {
 				t.Error("context should have valid trace ID")
-			}
-			if span.SpanContext().TraceID() != pubSpan.SpanContext().TraceID() {
-				t.Error("consumer context should be in same trace as producer")
 			}
 			_ = m.Msg.Ack()
 		}
@@ -151,13 +148,20 @@ func TestFetchReturnsMessagesWithTraceContext(t *testing.T) {
 		t.Errorf("batch error: %v", batch.Error())
 	}
 
-	// Assert consumer span has messaging.consumer.name
+	// Assert consumer span has messaging.consumer.name and link to producer
 	spans := sr.Ended()
 	consumerSpan := findSpanByKind(spans, oteltrace.SpanKindConsumer)
+	producerSpan := findSpanByKind(spans, oteltrace.SpanKindProducer)
 	if consumerSpan == nil {
 		t.Fatal("no consumer span")
 	}
 	assertAttr(t, consumerSpan.Attributes(), "messaging.consumer.name", consumerName)
+	if producerSpan != nil && len(consumerSpan.Links()) == 1 {
+		linkCtx := consumerSpan.Links()[0].SpanContext
+		if linkCtx.TraceID() != producerSpan.SpanContext().TraceID() || linkCtx.SpanID() != producerSpan.SpanContext().SpanID() {
+			t.Errorf("consumer link should point to producer span")
+		}
+	}
 }
 
 func TestConsumeTraceContext(t *testing.T) {
