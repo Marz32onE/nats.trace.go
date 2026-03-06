@@ -5,6 +5,7 @@ import (
 	"time"
 
 	nats "github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
@@ -12,7 +13,11 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const messagingSystem = "nats"
+const (
+	instrumentationName    = "github.com/Marz32onE/natstrace/natstrace"
+	instrumentationVersion = "0.3.0"
+	messagingSystem        = "nats"
+)
 
 // MsgHandler is the callback for subscriptions. Same as nats.MsgHandler but with context
 // that carries the trace extracted from the message headers.
@@ -21,23 +26,24 @@ type MsgHandler func(ctx context.Context, msg *nats.Msg)
 // Conn is a tracing-aware wrapper around *nats.Conn. API mirrors nats.Conn; the only
 // difference is Publish/PublishMsg take context.Context and handlers receive (ctx, msg).
 type Conn struct {
-	nc     *nats.Conn
-	tracer trace.Tracer
-	opts   options
+	nc        *nats.Conn
+	tracer    trace.Tracer
+	propagator propagation.TextMapPropagator
 }
 
-func newConn(nc *nats.Conn, opts ...Option) *Conn {
-	o := applyOptions(opts)
+func newConn(nc *nats.Conn) *Conn {
+	tp := otel.GetTracerProvider()
+	prop := otel.GetTextMapPropagator()
 	return &Conn{
-		nc:     nc,
-		tracer: o.tracerProvider.Tracer(instrumentationName, trace.WithInstrumentationVersion(instrumentationVersion), trace.WithSchemaURL(semconv.SchemaURL)),
-		opts:   o,
+		nc:         nc,
+		tracer:     tp.Tracer(instrumentationName, trace.WithInstrumentationVersion(instrumentationVersion), trace.WithSchemaURL(semconv.SchemaURL)),
+		propagator: prop,
 	}
 }
 
 // TraceContext returns the tracer and propagator used by this Conn. Used by jetstreamtrace.
 func (c *Conn) TraceContext() (trace.Tracer, propagation.TextMapPropagator) {
-	return c.tracer, c.opts.propagator
+	return c.tracer, c.propagator
 }
 
 // NatsConn returns the underlying *nats.Conn (same as nats package).
@@ -78,7 +84,7 @@ func (c *Conn) PublishMsg(ctx context.Context, msg *nats.Msg) error {
 		trace.WithAttributes(publishAttrs(msg)...),
 	)
 	defer span.End()
-	c.opts.propagator.Inject(ctx, &HeaderCarrier{H: msg.Header})
+	c.propagator.Inject(ctx, &HeaderCarrier{H: msg.Header})
 	if err := c.nc.PublishMsg(msg); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -108,7 +114,7 @@ func (c *Conn) Request(ctx context.Context, subject string, data []byte, timeout
 		),
 	)
 	defer span.End()
-	c.opts.propagator.Inject(reqCtx, &HeaderCarrier{H: msg.Header})
+	c.propagator.Inject(reqCtx, &HeaderCarrier{H: msg.Header})
 	reply, err := c.nc.RequestMsgWithContext(reqCtx, msg)
 	if err != nil {
 		span.RecordError(err)
@@ -131,7 +137,7 @@ func (c *Conn) QueueSubscribe(subject, queue string, handler MsgHandler) (*nats.
 
 func (c *Conn) wrapHandler(subject, queue string, handler MsgHandler) nats.MsgHandler {
 	return func(msg *nats.Msg) {
-		msgCtx := c.opts.propagator.Extract(context.Background(), &HeaderCarrier{H: msg.Header})
+		msgCtx := c.propagator.Extract(context.Background(), &HeaderCarrier{H: msg.Header})
 		// Per OTel messaging semconv: correlate producer and consumer only via span link (no parent-child).
 		spanName := "process " + subject
 		opts := []trace.SpanStartOption{
