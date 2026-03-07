@@ -1,4 +1,4 @@
-# golangci-lint config for natstrace (v2 for action version: latest)
+# golangci-lint v2 — reference: Prometheus, maratori/golangci-lint-config
 # https://golangci-lint.run/usage/configuration/
 version: "2"
 
@@ -7,6 +7,10 @@ run:
   modules-download-mode: readonly
   go: '1.25'
 
+issues:
+  max-same-issues: 0
+  max-issues-per-linter: 0
+
 linters:
   enable:
     - errcheck
@@ -14,11 +18,41 @@ linters:
     - ineffassign
     - staticcheck
     - unused
+    - misspell
+    - unconvert
+    - unparam
+    - prealloc
+    - revive
+    - gosec
+    - errorlint
+    - exptostd
+    - perfsprint
+    - predeclared
+    - usestdlibvars
+    - whitespace
+    - testifylint
   settings:
-    goimports:
-      local-prefixes: github.com/Marz32onE/natstrace
+    revive:
+      rules:
+        - name: exported
+          severity: warning
+          disabled: false
+    gosec:
+      excludes:
+        - G304  # file path from variable (e.g. config) — allow where appropriate
   exclusions:
     rules:
       - path: _test\.go
         linters:
-          - errcheck  # tests may intentionally ignore errors
+          - errcheck
+          - gosec
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Marz32onE/natstrace

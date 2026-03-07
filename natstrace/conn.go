@@ -26,8 +26,8 @@ type MsgHandler func(ctx context.Context, msg *nats.Msg)
 // Conn is a tracing-aware wrapper around *nats.Conn. API mirrors nats.Conn; the only
 // difference is Publish/PublishMsg take context.Context and handlers receive (ctx, msg).
 type Conn struct {
-	nc        *nats.Conn
-	tracer    trace.Tracer
+	nc         *nats.Conn
+	tracer     trace.Tracer
 	propagator propagation.TextMapPropagator
 }
 

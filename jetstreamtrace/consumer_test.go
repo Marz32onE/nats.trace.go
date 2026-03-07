@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	natssrv "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
@@ -118,7 +118,7 @@ func TestFetchReturnsMessagesWithTraceContext(t *testing.T) {
 	}
 	require.Equal(t, 1, received, "expected 1 message after retries")
 	if batch != nil {
-		assert.NoError(t, batch.Error())
+		require.NoError(t, batch.Error())
 	}
 
 	spans := sr.Ended()

@@ -12,6 +12,7 @@ type HeaderCarrier struct {
 	H nats.Header
 }
 
+// Get returns the value for key from the underlying header.
 func (c HeaderCarrier) Get(key string) string {
 	if c.H == nil {
 		return ""
@@ -19,6 +20,7 @@ func (c HeaderCarrier) Get(key string) string {
 	return c.H.Get(key)
 }
 
+// Set sets key to value in the underlying header.
 func (c HeaderCarrier) Set(key, value string) {
 	if c.H == nil {
 		return
@@ -26,6 +28,7 @@ func (c HeaderCarrier) Set(key, value string) {
 	c.H.Set(key, value)
 }
 
+// Keys returns all keys in the underlying header.
 func (c HeaderCarrier) Keys() []string {
 	if c.H == nil {
 		return nil

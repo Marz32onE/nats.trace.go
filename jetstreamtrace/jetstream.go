@@ -51,6 +51,7 @@ type ConsumerConfig = jetstream.ConsumerConfig
 // AckPolicy and ack policies mirror jetstream (so callers need not import jetstream).
 type AckPolicy = jetstream.AckPolicy
 
+// JetStream ack policies for consumer options.
 const (
 	AckExplicitPolicy = jetstream.AckExplicitPolicy
 	AckNonePolicy     = jetstream.AckNonePolicy

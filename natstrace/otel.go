@@ -23,7 +23,7 @@ var (
 	globalShutdown    func()
 )
 
-// TracerProviderOption is an InitTracer argument that uses the given TracerProvider
+// WithTracerProvider returns an InitTracer argument that uses the given TracerProvider
 // instead of creating one from the endpoint. Intended for tests (e.g. with a SpanRecorder).
 func WithTracerProvider(tp trace.TracerProvider) TracerProviderOption {
 	return TracerProviderOption{TracerProvider: tp}
