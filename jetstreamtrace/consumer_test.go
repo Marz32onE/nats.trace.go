@@ -5,8 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	natssrv "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/trace"
@@ -26,13 +29,9 @@ func startJetStreamServer(t *testing.T) string {
 		StoreDir:  t.TempDir(),
 	}
 	s, err := natssrv.NewServer(opts)
-	if err != nil {
-		t.Fatalf("nats-server: %v", err)
-	}
+	require.NoError(t, err)
 	go s.Start()
-	if !s.ReadyForConnections(5 * time.Second) {
-		t.Fatal("nats-server not ready")
-	}
+	require.True(t, s.ReadyForConnections(5*time.Second), "nats-server not ready")
 	t.Cleanup(s.Shutdown)
 	return s.ClientURL()
 }
@@ -50,9 +49,7 @@ func assertAttr(t *testing.T, attrs []attribute.KeyValue, key, want string) {
 	t.Helper()
 	for _, kv := range attrs {
 		if string(kv.Key) == key {
-			if got := kv.Value.AsString(); got != want {
-				t.Errorf("attribute %q: got %q, want %q", key, got, want)
-			}
+			assert.Equal(t, want, kv.Value.AsString(), "attribute %q", key)
 			return
 		}
 	}
@@ -64,20 +61,15 @@ func TestFetchReturnsMessagesWithTraceContext(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tp := trace.NewTracerProvider(trace.WithSpanProcessor(sr))
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
+	otel.SetTextMapPropagator(prop)
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
 
-	conn, err := natstrace.Connect(url, nil,
-		natstrace.WithTracerProvider(tp),
-		natstrace.WithPropagator(prop),
-	)
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
 	defer conn.Close()
 
 	js, err := jetstreamtrace.New(conn)
-	if err != nil {
-		t.Fatalf("JetStream: %v", err)
-	}
+	require.NoError(t, err)
 
 	ctx := context.Background()
 	streamName := "FETCHTEST"
@@ -85,14 +77,10 @@ func TestFetchReturnsMessagesWithTraceContext(t *testing.T) {
 		Name:     streamName,
 		Subjects: []string{"fetch.>"},
 	})
-	if err != nil {
-		t.Fatalf("CreateOrUpdateStream: %v", err)
-	}
+	require.NoError(t, err)
 
 	stream, err := js.Stream(ctx, streamName)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err)
 
 	consumerName := "fetch-consumer"
 	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstreamtrace.ConsumerConfig{
@@ -100,67 +88,48 @@ func TestFetchReturnsMessagesWithTraceContext(t *testing.T) {
 		FilterSubject: "fetch.test",
 		AckPolicy:     jetstreamtrace.AckExplicitPolicy,
 	})
-	if err != nil {
-		t.Fatalf("CreateOrUpdateConsumer: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Publish with trace context
 	tracer := tp.Tracer("publisher")
 	pubCtx, pubSpan := tracer.Start(ctx, "pub-parent")
 	defer pubSpan.End()
-	if _, err := js.Publish(pubCtx, "fetch.test", []byte("hello fetch")); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
+	_, err = js.Publish(pubCtx, "fetch.test", []byte("hello fetch"))
+	require.NoError(t, err)
 
-	// Fetch with retries until message is available (deterministic, avoids flaky fixed sleep)
+	// Fetch with retries until message is available
 	var received int
 	var batch jetstreamtrace.MessageBatch
 	for attempt := 0; attempt < 30; attempt++ {
 		var ferr error
 		batch, ferr = cons.Fetch(5, jetstream.FetchMaxWait(300*time.Millisecond))
-		if ferr != nil {
-			t.Fatalf("Fetch: %v", ferr)
-		}
+		require.NoError(t, ferr)
 		for m := range batch.MessagesWithContext() {
 			received++
-			if string(m.Msg.Data()) != "hello fetch" {
-				t.Errorf("got data %q", m.Msg.Data())
-			}
-			// Context carries consumer span (correlation to producer is via link only)
+			assert.Equal(t, "hello fetch", string(m.Msg.Data()))
 			span := oteltrace.SpanFromContext(m.Ctx)
-			if !span.SpanContext().TraceID().IsValid() {
-				t.Error("context should have valid trace ID")
-			}
+			assert.True(t, span.SpanContext().TraceID().IsValid(), "context should have valid trace ID")
 			_ = m.Msg.Ack()
-		}
-		if batch.Error() != nil {
-			t.Logf("Fetch attempt %d: %v", attempt+1, batch.Error())
 		}
 		if received == 1 {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if received != 1 {
-		t.Errorf("expected 1 message, got %d after retries", received)
-	}
-	if batch != nil && batch.Error() != nil {
-		t.Errorf("batch error: %v", batch.Error())
+	require.Equal(t, 1, received, "expected 1 message after retries")
+	if batch != nil {
+		assert.NoError(t, batch.Error())
 	}
 
-	// Assert consumer span has messaging.consumer.name and link to producer
 	spans := sr.Ended()
 	consumerSpan := findSpanByKind(spans, oteltrace.SpanKindConsumer)
 	producerSpan := findSpanByKind(spans, oteltrace.SpanKindProducer)
-	if consumerSpan == nil {
-		t.Fatal("no consumer span")
-	}
+	require.NotNil(t, consumerSpan, "no consumer span")
 	assertAttr(t, consumerSpan.Attributes(), "messaging.consumer.name", consumerName)
 	if producerSpan != nil && len(consumerSpan.Links()) == 1 {
 		linkCtx := consumerSpan.Links()[0].SpanContext
-		if linkCtx.TraceID() != producerSpan.SpanContext().TraceID() || linkCtx.SpanID() != producerSpan.SpanContext().SpanID() {
-			t.Errorf("consumer link should point to producer span")
-		}
+		assert.Equal(t, producerSpan.SpanContext().TraceID(), linkCtx.TraceID())
+		assert.Equal(t, producerSpan.SpanContext().SpanID(), linkCtx.SpanID())
 	}
 }
 
@@ -170,36 +139,28 @@ func TestConsumeTraceContext(t *testing.T) {
 	tp := trace.NewTracerProvider(trace.WithSpanProcessor(sr))
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
 
-	conn, err := natstrace.Connect(url, nil,
-		natstrace.WithTracerProvider(tp),
-		natstrace.WithPropagator(prop),
-	)
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	otel.SetTextMapPropagator(prop)
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
 	defer conn.Close()
 
 	js, err := jetstreamtrace.New(conn)
-	if err != nil {
-		t.Fatalf("JetStream: %v", err)
-	}
+	require.NoError(t, err)
 	ctx := context.Background()
 	_, err = js.CreateOrUpdateStream(ctx, jetstreamtrace.StreamConfig{
 		Name:     "CONSUMETEST",
 		Subjects: []string{"consume.>"},
 	})
-	if err != nil {
-		t.Fatalf("CreateOrUpdateStream: %v", err)
-	}
-	stream, _ := js.Stream(ctx, "CONSUMETEST")
+	require.NoError(t, err)
+	stream, err := js.Stream(ctx, "CONSUMETEST")
+	require.NoError(t, err)
 	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstreamtrace.ConsumerConfig{
 		Durable:       "consume-dup",
 		FilterSubject: "consume.msg",
 		AckPolicy:     jetstreamtrace.AckExplicitPolicy,
 	})
-	if err != nil {
-		t.Fatalf("CreateOrUpdateConsumer: %v", err)
-	}
+	require.NoError(t, err)
 
 	done := make(chan struct{}, 1)
 	cc, err := cons.Consume(func(msgCtx context.Context, msg jetstreamtrace.Msg) {
@@ -208,9 +169,7 @@ func TestConsumeTraceContext(t *testing.T) {
 		}
 		_ = msg.Ack()
 	})
-	if err != nil {
-		t.Fatalf("Consume: %v", err)
-	}
+	require.NoError(t, err)
 	defer cc.Stop()
 
 	tracer := tp.Tracer("pub")
@@ -230,47 +189,40 @@ func TestMessagesNextTraceContext(t *testing.T) {
 	tp := trace.NewTracerProvider()
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
 
-	conn, err := natstrace.Connect(url, nil,
-		natstrace.WithTracerProvider(tp),
-		natstrace.WithPropagator(prop),
-	)
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	otel.SetTextMapPropagator(prop)
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
 	defer conn.Close()
 
-	js, _ := jetstreamtrace.New(conn)
+	js, err := jetstreamtrace.New(conn)
+	require.NoError(t, err)
 	ctx := context.Background()
-	_, _ = js.CreateOrUpdateStream(ctx, jetstreamtrace.StreamConfig{
+	_, err = js.CreateOrUpdateStream(ctx, jetstreamtrace.StreamConfig{
 		Name:     "MSGTEST",
 		Subjects: []string{"msg.>"},
 	})
-	stream, _ := js.Stream(ctx, "MSGTEST")
-	cons, _ := stream.CreateOrUpdateConsumer(ctx, jetstreamtrace.ConsumerConfig{
+	require.NoError(t, err)
+	stream, err := js.Stream(ctx, "MSGTEST")
+	require.NoError(t, err)
+	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstreamtrace.ConsumerConfig{
 		Durable:       "msg-dup",
 		FilterSubject: "msg.one",
 		AckPolicy:     jetstreamtrace.AckExplicitPolicy,
 	})
+	require.NoError(t, err)
 
 	iter, err := cons.Messages()
-	if err != nil {
-		t.Fatalf("Messages: %v", err)
-	}
+	require.NoError(t, err)
 	defer iter.Stop()
 
 	_, _ = js.Publish(ctx, "msg.one", []byte("data"))
 	time.Sleep(300 * time.Millisecond)
 
 	msgCtx, msg, err := iter.Next()
-	if err != nil {
-		t.Fatalf("Next: %v", err)
-	}
-	if string(msg.Data()) != "data" {
-		t.Errorf("got %q", msg.Data())
-	}
-	if !oteltrace.SpanFromContext(msgCtx).SpanContext().TraceID().IsValid() {
-		t.Error("Next should return context with trace")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "data", string(msg.Data()))
+	assert.True(t, oteltrace.SpanFromContext(msgCtx).SpanContext().TraceID().IsValid(), "Next should return context with trace")
 	_ = msg.Ack()
 }
 
@@ -279,46 +231,41 @@ func TestFetchNoWaitReturnsTraceContext(t *testing.T) {
 	tp := trace.NewTracerProvider(trace.WithSpanProcessor(tracetest.NewSpanRecorder()))
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
 
-	conn, err := natstrace.Connect(url, nil,
-		natstrace.WithTracerProvider(tp),
-		natstrace.WithPropagator(prop),
-	)
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	otel.SetTextMapPropagator(prop)
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
 	defer conn.Close()
 
-	js, _ := jetstreamtrace.New(conn)
+	js, err := jetstreamtrace.New(conn)
+	require.NoError(t, err)
 	ctx := context.Background()
-	_, _ = js.CreateOrUpdateStream(ctx, jetstreamtrace.StreamConfig{
+	_, err = js.CreateOrUpdateStream(ctx, jetstreamtrace.StreamConfig{
 		Name:     "NOWAIT",
 		Subjects: []string{"nowait.>"},
 	})
-	stream, _ := js.Stream(ctx, "NOWAIT")
-	cons, _ := stream.CreateOrUpdateConsumer(ctx, jetstreamtrace.ConsumerConfig{
+	require.NoError(t, err)
+	stream, err := js.Stream(ctx, "NOWAIT")
+	require.NoError(t, err)
+	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstreamtrace.ConsumerConfig{
 		Durable:       "nowait-c",
 		FilterSubject: "nowait.x",
 		AckPolicy:     jetstreamtrace.AckExplicitPolicy,
 	})
+	require.NoError(t, err)
 
 	_, _ = js.Publish(ctx, "nowait.x", []byte("v"))
 	time.Sleep(200 * time.Millisecond)
 
 	batch, err := cons.FetchNoWait(5)
-	if err != nil {
-		t.Fatalf("FetchNoWait: %v", err)
-	}
+	require.NoError(t, err)
 	n := 0
 	for m := range batch.MessagesWithContext() {
 		n++
-		if !oteltrace.SpanFromContext(m.Ctx).SpanContext().TraceID().IsValid() {
-			t.Error("context should have trace")
-		}
+		assert.True(t, oteltrace.SpanFromContext(m.Ctx).SpanContext().TraceID().IsValid(), "context should have trace")
 		_ = m.Msg.Ack()
 	}
-	if n != 1 {
-		t.Errorf("expected 1 message, got %d", n)
-	}
+	assert.Equal(t, 1, n)
 }
 
 func TestFetchBytesTraceContext(t *testing.T) {
@@ -326,39 +273,36 @@ func TestFetchBytesTraceContext(t *testing.T) {
 	tp := trace.NewTracerProvider()
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
 
-	conn, err := natstrace.Connect(url, nil,
-		natstrace.WithTracerProvider(tp),
-		natstrace.WithPropagator(prop),
-	)
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	otel.SetTextMapPropagator(prop)
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
 	defer conn.Close()
 
-	js, _ := jetstreamtrace.New(conn)
+	js, err := jetstreamtrace.New(conn)
+	require.NoError(t, err)
 	ctx := context.Background()
-	_, _ = js.CreateOrUpdateStream(ctx, jetstreamtrace.StreamConfig{
+	_, err = js.CreateOrUpdateStream(ctx, jetstreamtrace.StreamConfig{
 		Name:     "BYTESTEST",
 		Subjects: []string{"bytes.>"},
 	})
-	stream, _ := js.Stream(ctx, "BYTESTEST")
-	cons, _ := stream.CreateOrUpdateConsumer(ctx, jetstreamtrace.ConsumerConfig{
+	require.NoError(t, err)
+	stream, err := js.Stream(ctx, "BYTESTEST")
+	require.NoError(t, err)
+	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstreamtrace.ConsumerConfig{
 		Durable:       "bytes-c",
 		FilterSubject: "bytes.a",
 		AckPolicy:     jetstreamtrace.AckExplicitPolicy,
 	})
+	require.NoError(t, err)
 
 	_, _ = js.Publish(ctx, "bytes.a", []byte("hello"))
 	time.Sleep(200 * time.Millisecond)
 
 	batch, err := cons.FetchBytes(1024, jetstream.FetchMaxWait(5*time.Second))
-	if err != nil {
-		t.Fatalf("FetchBytes: %v", err)
-	}
+	require.NoError(t, err)
 	for m := range batch.MessagesWithContext() {
-		if !oteltrace.SpanFromContext(m.Ctx).SpanContext().TraceID().IsValid() {
-			t.Error("context should have trace")
-		}
+		assert.True(t, oteltrace.SpanFromContext(m.Ctx).SpanContext().TraceID().IsValid(), "context should have trace")
 		_ = m.Msg.Ack()
 	}
 }

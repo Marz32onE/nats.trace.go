@@ -5,8 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	natssrv "github.com/nats-io/nats-server/v2/server"
 	nats "github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/trace"
@@ -26,13 +29,9 @@ func startServer(t *testing.T) string {
 	t.Helper()
 	opts := &natssrv.Options{Host: "127.0.0.1", Port: -1}
 	s, err := natssrv.NewServer(opts)
-	if err != nil {
-		t.Fatalf("nats-server: %v", err)
-	}
+	require.NoError(t, err)
 	go s.Start()
-	if !s.ReadyForConnections(5 * time.Second) {
-		t.Fatal("nats-server not ready")
-	}
+	require.True(t, s.ReadyForConnections(5*time.Second), "nats-server not ready")
 	t.Cleanup(s.Shutdown)
 	return s.ClientURL()
 }
@@ -50,9 +49,7 @@ func assertAttr(t *testing.T, attrs []attribute.KeyValue, key, want string) {
 	t.Helper()
 	for _, kv := range attrs {
 		if string(kv.Key) == key {
-			if got := kv.Value.AsString(); got != want {
-				t.Errorf("attribute %q: got %q, want %q", key, got, want)
-			}
+			assert.Equal(t, want, kv.Value.AsString(), "attribute %q", key)
 			return
 		}
 	}
@@ -63,11 +60,11 @@ func TestW3CPropagationRoundtrip(t *testing.T) {
 	url := startServer(t)
 	tp, _ := newTestProvider()
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
+	otel.SetTextMapPropagator(prop)
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
 
-	conn, err := natstrace.Connect(url, nil, natstrace.WithTracerProvider(tp), natstrace.WithPropagator(prop))
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
 	defer conn.Close()
 
 	tracer := tp.Tracer("roundtrip-test")
@@ -80,13 +77,10 @@ func TestW3CPropagationRoundtrip(t *testing.T) {
 	_, err = conn.NatsConn().Subscribe(subject, func(msg *nats.Msg) {
 		headerCh <- msg.Header
 	})
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
+	require.NoError(t, err)
 
-	if err := conn.Publish(parentCtx, subject, []byte("ping")); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
+	err = conn.Publish(parentCtx, subject, []byte("ping"))
+	require.NoError(t, err)
 
 	var h nats.Header
 	select {
@@ -98,36 +92,26 @@ func TestW3CPropagationRoundtrip(t *testing.T) {
 	carrier := natstrace.HeaderCarrier{H: h}
 	extracted := prop.Extract(context.Background(), carrier)
 	gotTraceID := oteltrace.SpanFromContext(extracted).SpanContext().TraceID()
-	if gotTraceID != wantTraceID {
-		t.Errorf("traceID: got %s, want %s", gotTraceID, wantTraceID)
-	}
+	assert.Equal(t, wantTraceID, gotTraceID)
 }
 
 func TestPublishCreatesProducerSpan(t *testing.T) {
 	url := startServer(t)
 	tp, sr := newTestProvider()
-	conn, err := natstrace.Connect(url, nil, natstrace.WithTracerProvider(tp))
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
 	defer conn.Close()
 
 	subject := "test.publish"
-	if err := conn.Publish(context.Background(), subject, []byte("hello")); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
+	err = conn.Publish(context.Background(), subject, []byte("hello"))
+	require.NoError(t, err)
 
 	spans := sr.Ended()
-	if len(spans) != 1 {
-		t.Fatalf("expected 1 span, got %d", len(spans))
-	}
+	require.Len(t, spans, 1)
 	s := spans[0]
-	if want := "send " + subject; s.Name() != want {
-		t.Errorf("span name: got %q, want %q", s.Name(), want)
-	}
-	if s.SpanKind() != oteltrace.SpanKindProducer {
-		t.Errorf("span kind: got %v", s.SpanKind())
-	}
+	assert.Equal(t, "send "+subject, s.Name())
+	assert.Equal(t, oteltrace.SpanKindProducer, s.SpanKind())
 	assertAttr(t, s.Attributes(), "messaging.system", "nats")
 	assertAttr(t, s.Attributes(), "messaging.destination.name", subject)
 }
@@ -135,22 +119,19 @@ func TestPublishCreatesProducerSpan(t *testing.T) {
 func TestPublishMsgCreatesProducerSpan(t *testing.T) {
 	url := startServer(t)
 	tp, sr := newTestProvider()
-	conn, err := natstrace.Connect(url, nil, natstrace.WithTracerProvider(tp))
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
 	defer conn.Close()
 
 	subject := "test.publishmsg"
 	msg := &nats.Msg{Subject: subject, Data: []byte("hello msg")}
-	if err := conn.PublishMsg(context.Background(), msg); err != nil {
-		t.Fatalf("PublishMsg: %v", err)
-	}
+	err = conn.PublishMsg(context.Background(), msg)
+	require.NoError(t, err)
 
 	spans := sr.Ended()
-	if len(spans) != 1 || spans[0].SpanKind() != oteltrace.SpanKindProducer {
-		t.Errorf("expected 1 producer span, got %d", len(spans))
-	}
+	require.Len(t, spans, 1)
+	assert.Equal(t, oteltrace.SpanKindProducer, spans[0].SpanKind())
 }
 
 func TestSubscribeExtractsTraceContext(t *testing.T) {
@@ -158,10 +139,10 @@ func TestSubscribeExtractsTraceContext(t *testing.T) {
 	tp, sr := newTestProvider()
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
 
-	conn, err := natstrace.Connect(url, nil, natstrace.WithTracerProvider(tp), natstrace.WithPropagator(prop))
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	otel.SetTextMapPropagator(prop)
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
 	defer conn.Close()
 
 	subject := "test.subscribe"
@@ -170,15 +151,12 @@ func TestSubscribeExtractsTraceContext(t *testing.T) {
 		_ = oteltrace.SpanFromContext(ctx).SpanContext().TraceID()
 		done <- struct{}{}
 	})
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
+	require.NoError(t, err)
 
 	tracer := tp.Tracer("publisher")
 	pubCtx, pubSpan := tracer.Start(context.Background(), "pub-parent")
-	if err := conn.Publish(pubCtx, subject, []byte("hello")); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
+	err = conn.Publish(pubCtx, subject, []byte("hello"))
+	require.NoError(t, err)
 	pubSpan.End()
 
 	select {
@@ -190,32 +168,22 @@ func TestSubscribeExtractsTraceContext(t *testing.T) {
 	spans := sr.Ended()
 	producer := findSpanByKind(spans, oteltrace.SpanKindProducer)
 	consumerSpan := findSpanByKind(spans, oteltrace.SpanKindConsumer)
-	if consumerSpan == nil {
-		t.Fatal("no consumer span")
-	}
-	if want := "process " + subject; consumerSpan.Name() != want {
-		t.Errorf("consumer span name: got %q, want %q", consumerSpan.Name(), want)
-	}
+	require.NotNil(t, consumerSpan, "no consumer span")
+	assert.Equal(t, "process "+subject, consumerSpan.Name())
 	if producer != nil {
-		// Per OTel messaging semconv: correlate only via span link (no parent-child).
-		if n := len(consumerSpan.Links()); n != 1 {
-			t.Errorf("consumer span should have 1 link to producer, got %d", n)
-		} else {
-			linkCtx := consumerSpan.Links()[0].SpanContext
-			if linkCtx.TraceID() != producer.SpanContext().TraceID() || linkCtx.SpanID() != producer.SpanContext().SpanID() {
-				t.Errorf("consumer link should point to producer span (trace_id=%s span_id=%s)", linkCtx.TraceID(), linkCtx.SpanID())
-			}
-		}
+		require.Len(t, consumerSpan.Links(), 1, "consumer span should have 1 link to producer")
+		linkCtx := consumerSpan.Links()[0].SpanContext
+		assert.Equal(t, producer.SpanContext().TraceID(), linkCtx.TraceID())
+		assert.Equal(t, producer.SpanContext().SpanID(), linkCtx.SpanID())
 	}
 }
 
 func TestQueueSubscribeRecordsQueueName(t *testing.T) {
 	url := startServer(t)
 	tp, sr := newTestProvider()
-	conn, err := natstrace.Connect(url, nil, natstrace.WithTracerProvider(tp))
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
 	defer conn.Close()
 
 	subject, queue := "test.queue", "workers"
@@ -223,21 +191,16 @@ func TestQueueSubscribeRecordsQueueName(t *testing.T) {
 	_, err = conn.QueueSubscribe(subject, queue, func(ctx context.Context, _ *nats.Msg) {
 		done <- struct{}{}
 	})
-	if err != nil {
-		t.Fatalf("QueueSubscribe: %v", err)
-	}
-	if err := conn.Publish(context.Background(), subject, []byte("work")); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
+	require.NoError(t, err)
+	err = conn.Publish(context.Background(), subject, []byte("work"))
+	require.NoError(t, err)
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout")
 	}
 	consumerSpan := findSpanByKind(sr.Ended(), oteltrace.SpanKindConsumer)
-	if consumerSpan == nil {
-		t.Fatal("no consumer span")
-	}
+	require.NotNil(t, consumerSpan, "no consumer span")
 	assertAttr(t, consumerSpan.Attributes(), "messaging.consumer.group.name", queue)
 }
 
@@ -246,10 +209,10 @@ func TestSubscribeConsumerSpanLinkedToProducer(t *testing.T) {
 	tp, sr := newTestProvider()
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
 
-	conn, err := natstrace.Connect(url, nil, natstrace.WithTracerProvider(tp), natstrace.WithPropagator(prop))
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	otel.SetTextMapPropagator(prop)
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
 	defer conn.Close()
 
 	subject := "test.linkage"
@@ -257,12 +220,9 @@ func TestSubscribeConsumerSpanLinkedToProducer(t *testing.T) {
 	_, err = conn.Subscribe(subject, func(ctx context.Context, _ *nats.Msg) {
 		done <- struct{}{}
 	})
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
-	if err := conn.Publish(context.Background(), subject, []byte("link-test")); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
+	require.NoError(t, err)
+	err = conn.Publish(context.Background(), subject, []byte("link-test"))
+	require.NoError(t, err)
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -272,69 +232,47 @@ func TestSubscribeConsumerSpanLinkedToProducer(t *testing.T) {
 	spans := sr.Ended()
 	producer := findSpanByKind(spans, oteltrace.SpanKindProducer)
 	consumer := findSpanByKind(spans, oteltrace.SpanKindConsumer)
-	if producer == nil || consumer == nil {
-		t.Fatalf("missing spans: producer=%v consumer=%v", producer, consumer)
-	}
-	// OTel messaging semconv: correlate only via span link (no parent-child).
-	if n := len(consumer.Links()); n != 1 {
-		t.Errorf("consumer span should have 1 link to producer, got %d", n)
-	} else {
-		linkCtx := consumer.Links()[0].SpanContext
-		if linkCtx.TraceID() != producer.SpanContext().TraceID() || linkCtx.SpanID() != producer.SpanContext().SpanID() {
-			t.Errorf("consumer link should point to producer span (trace_id=%s span_id=%s)", linkCtx.TraceID(), linkCtx.SpanID())
-		}
-	}
+	require.NotNil(t, producer, "missing producer span")
+	require.NotNil(t, consumer, "missing consumer span")
+	require.Len(t, consumer.Links(), 1, "consumer span should have 1 link to producer")
+	linkCtx := consumer.Links()[0].SpanContext
+	assert.Equal(t, producer.SpanContext().TraceID(), linkCtx.TraceID())
+	assert.Equal(t, producer.SpanContext().SpanID(), linkCtx.SpanID())
 }
 
 func TestRequestCreatesProducerSpanAndReturnsReply(t *testing.T) {
 	url := startServer(t)
 	tp, sr := newTestProvider()
-	conn, err := natstrace.Connect(url, nil, natstrace.WithTracerProvider(tp))
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
 	defer conn.Close()
 
 	subject := "req.reply"
 	_, err = conn.NatsConn().Subscribe(subject, func(msg *nats.Msg) {
 		_ = msg.Respond([]byte("pong"))
 	})
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
+	require.NoError(t, err)
 
 	reply, err := conn.Request(context.Background(), subject, []byte("ping"), 2*time.Second)
-	if err != nil {
-		t.Fatalf("Request: %v", err)
-	}
-	if string(reply.Data) != "pong" {
-		t.Errorf("got reply %q", reply.Data)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "pong", string(reply.Data))
 
 	spans := sr.Ended()
 	producer := findSpanByKind(spans, oteltrace.SpanKindProducer)
-	if producer == nil {
-		t.Fatal("no producer span")
-	}
-	if want := "send " + subject; producer.Name() != want {
-		t.Errorf("span name: got %q, want %q", producer.Name(), want)
-	}
+	require.NotNil(t, producer, "no producer span")
+	assert.Equal(t, "send "+subject, producer.Name())
 }
 
 func TestTraceContextReturnsTracerAndPropagator(t *testing.T) {
 	url := startServer(t)
 	tp := trace.NewTracerProvider()
-	conn, err := natstrace.Connect(url, nil, natstrace.WithTracerProvider(tp))
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
 	defer conn.Close()
 
 	tracer, prop := conn.TraceContext()
-	if tracer == nil {
-		t.Error("TraceContext() tracer should not be nil")
-	}
-	if prop == nil {
-		t.Error("TraceContext() propagator should not be nil")
-	}
+	assert.NotNil(t, tracer, "TraceContext() tracer should not be nil")
+	assert.NotNil(t, prop, "TraceContext() propagator should not be nil")
 }

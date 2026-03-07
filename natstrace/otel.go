@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -22,12 +23,42 @@ var (
 	globalShutdown    func()
 )
 
+// TracerProviderOption is an InitTracer argument that uses the given TracerProvider
+// instead of creating one from the endpoint. Intended for tests (e.g. with a SpanRecorder).
+func WithTracerProvider(tp trace.TracerProvider) TracerProviderOption {
+	return TracerProviderOption{TracerProvider: tp}
+}
+
+// TracerProviderOption holds a TracerProvider to use when passed to InitTracer.
+type TracerProviderOption struct {
+	TracerProvider trace.TracerProvider
+}
+
 // InitTracer sets the global TracerProvider and TextMapPropagator for the process.
 // Call once at startup (e.g. in main) with OTLP endpoint and resource attributes.
 // Propagator is fixed to TraceContext + Baggage. If the global provider is already
 // an SDK TracerProvider (e.g. set by another package), InitTracer is a no-op.
 // Empty endpoint uses OTEL_EXPORTER_OTLP_ENDPOINT env or "localhost:4317".
-func InitTracer(endpoint string, attrs ...attribute.KeyValue) error {
+//
+// For tests, pass WithTracerProvider(tp) as an extra argument to use a custom provider
+// (e.g. one with tracetest.SpanRecorder) instead of creating an OTLP exporter.
+func InitTracer(endpoint string, args ...interface{}) error {
+	var attrs []attribute.KeyValue
+	for _, a := range args {
+		if opt, ok := a.(TracerProviderOption); ok {
+			otel.SetTracerProvider(opt.TracerProvider)
+			tracerInitialized = true
+			return nil
+		}
+		if kv, ok := a.(attribute.KeyValue); ok {
+			attrs = append(attrs, kv)
+			continue
+		}
+		if slice, ok := a.([]attribute.KeyValue); ok {
+			attrs = append(attrs, slice...)
+		}
+	}
+
 	if g := otel.GetTracerProvider(); g != nil {
 		if _, ok := g.(*sdktrace.TracerProvider); ok {
 			tracerInitialized = true
