@@ -1,127 +1,127 @@
-# nats.trace.go
+# natstrace
 
-`natstracing` is a thin OpenTelemetry (OTLP) tracing wrapper around the
-[nats.io/nats.go](https://github.com/nats-io/nats.go) client library.  
-It injects W3C TraceContext into every outbound NATS message and extracts it
-on the subscriber side, so every message flowing through NATS carries a
-distributed trace that can be collected by any OTLP-compatible backend
-(Jaeger, Tempo, Honeycomb, etc.).
+[繁體中文 (Traditional Chinese)](README.zh-TW.md)
 
 ---
 
-## Features
-
-| Feature | Details |
-|---|---|
-| **Context propagation** | W3C `traceparent` / `tracestate` injected into NATS message headers |
-| **Producer spans** | `SpanKindProducer` span per `Publish` / `PublishMsg` / `Request` call |
-| **Consumer spans** | `SpanKindConsumer` span per received message; child of the producer span |
-| **3 connection modes** | Plain, mTLS, credentials file (NKey + JWT) |
-| **OTLP semantic conventions** | `messaging.system=nats`, `messaging.destination.name`, `messaging.operation.type`, `messaging.message.body.size`, `messaging.consumer.group.name` (semconv v1.27.0) |
-| **Configurable** | Custom `TracerProvider` and `TextMapPropagator` via functional options |
+OpenTelemetry tracing wrapper for [NATS](https://nats.io/) and [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream), aligned with the official `nats.go` / `nats.go/jetstream` APIs. Propagates W3C Trace Context in message headers.
 
 ---
 
-## Installation
+## Architecture
 
-```bash
-go get github.com/Marz32onE/nats.trace.go
+```
+pkg/natstrace/
+├── natstrace/           # Core NATS connection and Pub/Sub
+│   ├── otel.go          # InitTracer, ShutdownTracer, WithTracerProvider
+│   ├── connect.go       # Connect, ConnectTLS, ConnectWithCredentials
+│   ├── conn.go          # Conn: Publish, PublishMsg, Subscribe, QueueSubscribe, Request
+│   ├── propagation.go   # HeaderCarrier (nats.Header ↔ TextMapCarrier)
+│   └── doc.go
+├── jetstreamtrace/      # JetStream streams and consumers
+│   ├── jetstream.go     # New, JetStream, Publish, CreateOrUpdateStream
+│   ├── stream.go        # Stream, Consumer, CreateOrUpdateConsumer
+│   ├── consumer.go      # Consume, Messages, Fetch, FetchBytes, FetchNoWait, MessageBatch
+│   └── doc.go
+├── go.mod
+└── README.md
 ```
 
+- **Tracer and propagator:** Provided by the **global** default. You **may** call **`InitTracer(endpoint, attrs...)`** first to set service name/version and endpoint; if you don’t, the first **`Connect(url, ...)`** will initialize the tracer with default endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT` or `localhost:4317`), auto-generated `service.name` (UUID), and `service.version` (`0.0.0`). **Explicit InitTracer is recommended** so you can set a proper service name and version.
+- **Connection:** `natstrace.Connect(url, natsOpts)` returns **`*natstrace.Conn`**, used like `*nats.Conn`; Publish/Request take an extra `context.Context`, and Subscribe handlers are `func(ctx context.Context, msg *nats.Msg)` with trace extracted from headers into `ctx`.
+- **JetStream:** `jetstreamtrace.New(conn)` requires **`*natstrace.Conn`**. Publish accepts `context.Context`; Consume / Messages / Fetch return contexts (or `MessageBatch.MessagesWithContext()`) that carry trace from message headers.
+
 ---
 
-## Quick Start
+## Usage
 
-### 1 — Plain connection
+### 1. Initialize (recommended) or connect directly
+
+You can call **`Connect`** without calling **InitTracer** first; the package will initialize the tracer with default endpoint, auto-generated `service.name` (UUID v4), and `service.version` (`0.0.0`). **Calling InitTracer explicitly is recommended** so you can set a proper service name and version.
+
+**Recommended (explicit InitTracer):**
 
 ```go
 import (
-    natstracing "github.com/Marz32onE/nats.trace.go"
-    "go.opentelemetry.io/otel/propagation"
+    "go.opentelemetry.io/otel/attribute"
+    "github.com/Marz32onE/natstrace/natstrace"
 )
 
-conn, err := natstracing.Connect("nats://localhost:4222", nil,
-    natstracing.WithTracerProvider(otel.GetTracerProvider()),
-    natstracing.WithPropagator(propagation.NewCompositeTextMapPropagator(
-        propagation.TraceContext{},
-        propagation.Baggage{},
-    )),
-)
+func main() {
+    if err := natstrace.InitTracer("", attribute.String("service.name", "my-service"), attribute.String("service.version", "1.0.0")); err != nil {
+        log.Fatal(err)
+    }
+    defer natstrace.ShutdownTracer() // optional; package also registers runtime.AddCleanup for process teardown
+
+    conn, err := natstrace.Connect(natsURL, nil)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer conn.Close()
+    // ...
+}
 ```
 
-### 2 — mTLS connection
+**Minimal (no InitTracer):** `natstrace.Connect(natsURL, nil)` will initialize the tracer automatically with defaults.
+
+- Empty `endpoint` uses `OTEL_EXPORTER_OTLP_ENDPOINT` or `localhost:4317`.
+- HTTP endpoints (e.g. `http://...` or port 4318) use OTLP/HTTP; otherwise OTLP/gRPC.
+- If you omit `service.name` / `service.version` in InitTracer args, the package sets `service.name` to a UUID and `service.version` to `0.0.0`.
+
+### 2. Core NATS: Publish / Subscribe
 
 ```go
-conn, err := natstracing.ConnectTLS(
-    "nats://localhost:4222",
-    "client.crt", "client.key", "ca.crt",
-    nil, // extra nats.Options
-)
-```
+conn.Publish(ctx, "subject", []byte("data"))
+conn.PublishMsg(ctx, msg)
 
-### 3 — Credentials file (NKey + JWT)
-
-```go
-conn, err := natstracing.ConnectWithCredentials(
-    "nats://localhost:4222",
-    "/path/to/user.creds",
-    nil, // extra nats.Options
-)
-```
-
----
-
-## Publishing
-
-```go
-ctx := context.Background() // or a context already carrying a span
-
-// Inject trace context and publish
-err := conn.Publish(ctx, "orders.created", payload)
-
-// Publish a pre-built message
-msg := &nats.Msg{Subject: "orders.created", Data: payload}
-err = conn.PublishMsg(ctx, msg)
-
-// Request-reply
-reply, err := conn.Request(ctx, "inventory.check", payload, 5*time.Second)
-```
-
-## Subscribing
-
-```go
-// Subscribe – the callback receives a context with the extracted traceID.
-conn.Subscribe("orders.created", func(ctx context.Context, msg *nats.Msg) {
-    // ctx carries the traceID from the publisher; create child spans here.
-    _, span := tracer.Start(ctx, "process order")
-    defer span.End()
-    // ... handle msg
+conn.Subscribe("subject", func(ctx context.Context, msg *nats.Msg) {
+    // ctx carries trace from headers
 })
+conn.QueueSubscribe("subject", "queue", handler)
 
-// Queue subscribe (load-balanced consumer group)
-conn.QueueSubscribe("orders.created", "processors",
-    func(ctx context.Context, msg *nats.Msg) { /* ... */ })
+reply, err := conn.Request(ctx, "subject", []byte("ping"), 2*time.Second)
 ```
 
+### 3. JetStream
+
+```go
+js, err := jetstreamtrace.New(conn)
+// After creating stream/consumer:
+cons.Consume(func(ctx context.Context, msg jetstreamtrace.Msg) {
+    // ctx has trace from message headers
+})
+// Or
+iter, _ := cons.Messages()
+ctx, msg, err := iter.Next()
+// Or
+batch, _ := cons.Fetch(5, jetstream.FetchMaxWait(time.Second))
+for m := range batch.MessagesWithContext() {
+    // m.Ctx has trace
+}
+```
+
+### 4. Underlying *nats.Conn
+
+`conn.NatsConn()` returns `*nats.Conn`. `conn.TraceContext()` returns the Tracer and TextMapPropagator (used internally by jetstreamtrace).
+
 ---
 
-## Span attributes (OTLP Messaging Semconv v1.27.0)
+## API
 
-| Attribute | Value |
-|---|---|
-| `messaging.system` | `nats` |
-| `messaging.destination.name` | NATS subject |
-| `messaging.operation.type` | `publish` (producer) / `receive` (consumer) |
-| `messaging.operation.name` | `publish` / `receive` |
-| `messaging.message.body.size` | byte length of `msg.Data` |
-| `messaging.message.conversation_id` | reply subject (if set) |
-| `messaging.consumer.group.name` | queue group name (queue subscriptions only) |
+| Item | Description |
+|------|-------------|
+| **InitTracer** | Optional but **recommended**. Sets global TracerProvider and TextMapPropagator; if not called, the first `Connect` initializes with default endpoint and auto service.name/version. |
+| **ShutdownTracer** | Optional; the package registers `runtime.AddCleanup` (Go 1.24+) so shutdown runs at process teardown. Call `defer ShutdownTracer()` for guaranteed flush before exit. |
+| **Connect** | `Connect(url string, natsOpts []nats.Option)`. If tracer not initialized, calls `InitTracer("", nil)` first. |
+| **ConnectTLS / ConnectWithCredentials** | Require InitTracer to have been called first (return **`ErrInitTracerRequired`** otherwise). |
+| **Tests** | Use `natstrace.InitTracer("", natstrace.WithTracerProvider(tp))` (and optionally `otel.SetTextMapPropagator(prop)`) before `Connect(url, nil)`. |
 
 ---
 
-## Options
+## Dependencies
 
-| Option | Default | Description |
-|---|---|---|
-| `WithTracerProvider(tp)` | `otel.GetTracerProvider()` | Custom TracerProvider |
-| `WithPropagator(p)` | `otel.GetTextMapPropagator()` | Custom TextMapPropagator |
+- `github.com/nats-io/nats.go` (includes JetStream)
+- `go.opentelemetry.io/otel` and SDK (trace, propagation, OTLP exporter)
+- Go 1.25+
+
+Tests use `github.com/stretchr/testify` and `nats-server/v2` for integration tests.
