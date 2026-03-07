@@ -1,10 +1,11 @@
-# golangci-lint config for natstrace
+# golangci-lint config for natstrace (v2 for action version: latest)
 # https://golangci-lint.run/usage/configuration/
+version: "2"
 
 run:
   timeout: 5m
   modules-download-mode: readonly
-  go: '1.26'
+  go: '1.25'
 
 linters:
   enable:
@@ -13,12 +14,11 @@ linters:
     - ineffassign
     - staticcheck
     - unused
+  settings:
+    goimports:
+      local-prefixes: github.com/Marz32onE/natstrace
   exclusions:
     rules:
       - path: _test\.go
         linters:
           - errcheck  # tests may intentionally ignore errors
-
-linters-settings:
-  goimports:
-    local-prefixes: github.com/Marz32onE/natstrace
