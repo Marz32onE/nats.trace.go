@@ -4,10 +4,12 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -18,9 +20,17 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+const (
+	serviceNameKey    = attribute.Key("service.name")
+	serviceVersionKey = attribute.Key("service.version")
+	defaultVersion    = "0.0.0"
+)
+
 var (
 	tracerInitialized bool
 	globalShutdown    func()
+	// cleanupOwner is used with runtime.AddCleanup so ShutdownTracer runs when the process tears down (best-effort; call defer ShutdownTracer() for guaranteed flush).
+	cleanupOwner *struct{}
 )
 
 // WithTracerProvider returns an InitTracer argument that uses the given TracerProvider
@@ -91,6 +101,7 @@ func InitTracer(endpoint string, args ...interface{}) error {
 		return err
 	}
 
+	attrs = ensureServiceNameAndVersion(attrs)
 	res, err := resource.New(ctx, resource.WithAttributes(attrs...))
 	if err != nil {
 		return err
@@ -111,11 +122,15 @@ func InitTracer(endpoint string, args ...interface{}) error {
 		defer cancel()
 		_ = tp.Shutdown(shutdownCtx)
 	}
+	cleanupOwner = &struct{}{}
+	runtime.AddCleanup(cleanupOwner, func(struct{}) { ShutdownTracer() }, struct{}{})
 	tracerInitialized = true
 	return nil
 }
 
-// ShutdownTracer shuts down the TracerProvider set by InitTracer. Call before process exit (e.g. defer).
+// ShutdownTracer shuts down the TracerProvider set by InitTracer.
+// The package also registers runtime.AddCleanup (Go 1.24+) so ShutdownTracer runs when the process tears down (best-effort).
+// For guaranteed flush before exit, call "defer natstrace.ShutdownTracer()" in main.
 func ShutdownTracer() {
 	if globalShutdown != nil {
 		globalShutdown()
@@ -149,4 +164,24 @@ func splitHostPort(hostport string) (host, port string, err error) {
 
 func isTracerInitialized() bool {
 	return tracerInitialized
+}
+
+// ensureServiceNameAndVersion adds service.name (UUID v4) and service.version ("0.0.0") if missing.
+func ensureServiceNameAndVersion(attrs []attribute.KeyValue) []attribute.KeyValue {
+	hasName, hasVersion := false, false
+	for _, kv := range attrs {
+		if kv.Key == serviceNameKey {
+			hasName = true
+		}
+		if kv.Key == serviceVersionKey {
+			hasVersion = true
+		}
+	}
+	if !hasName {
+		attrs = append(attrs, serviceNameKey.String(uuid.New().String()))
+	}
+	if !hasVersion {
+		attrs = append(attrs, serviceVersionKey.String(defaultVersion))
+	}
+	return attrs
 }

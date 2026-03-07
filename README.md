@@ -27,7 +27,7 @@ pkg/natstrace/
 └── README.md
 ```
 
-- **Tracer and propagator:** Provided by the **global** default. You must call **`InitTracer(endpoint, attrs...)`** first; then `Connect` / `ConnectTLS` / `ConnectWithCredentials` and `jetstreamtrace.New(conn)` use the same TracerProvider and TextMapPropagator (TraceContext + Baggage).
+- **Tracer and propagator:** Provided by the **global** default. You **may** call **`InitTracer(endpoint, attrs...)`** first to set service name/version and endpoint; if you don’t, the first **`Connect(url, ...)`** will initialize the tracer with default endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT` or `localhost:4317`), auto-generated `service.name` (UUID), and `service.version` (`0.0.0`). **Explicit InitTracer is recommended** so you can set a proper service name and version.
 - **Connection:** `natstrace.Connect(url, natsOpts)` returns **`*natstrace.Conn`**, used like `*nats.Conn`; Publish/Request take an extra `context.Context`, and Subscribe handlers are `func(ctx context.Context, msg *nats.Msg)` with trace extracted from headers into `ctx`.
 - **JetStream:** `jetstreamtrace.New(conn)` requires **`*natstrace.Conn`**. Publish accepts `context.Context`; Consume / Messages / Fetch return contexts (or `MessageBatch.MessagesWithContext()`) that carry trace from message headers.
 
@@ -35,7 +35,11 @@ pkg/natstrace/
 
 ## Usage
 
-### 1. Initialize (before Connect)
+### 1. Initialize (recommended) or connect directly
+
+You can call **`Connect`** without calling **InitTracer** first; the package will initialize the tracer with default endpoint, auto-generated `service.name` (UUID v4), and `service.version` (`0.0.0`). **Calling InitTracer explicitly is recommended** so you can set a proper service name and version.
+
+**Recommended (explicit InitTracer):**
 
 ```go
 import (
@@ -44,22 +48,25 @@ import (
 )
 
 func main() {
-    if err := natstrace.InitTracer("", attribute.String("service.name", "my-service")); err != nil {
+    if err := natstrace.InitTracer("", attribute.String("service.name", "my-service"), attribute.String("service.version", "1.0.0")); err != nil {
         log.Fatal(err)
     }
-    defer natstrace.ShutdownTracer()
+    defer natstrace.ShutdownTracer() // optional; package also registers runtime.AddCleanup for process teardown
 
     conn, err := natstrace.Connect(natsURL, nil)
     if err != nil {
-        log.Fatal(err) // ErrInitTracerRequired if InitTracer was not called
+        log.Fatal(err)
     }
     defer conn.Close()
     // ...
 }
 ```
 
+**Minimal (no InitTracer):** `natstrace.Connect(natsURL, nil)` will initialize the tracer automatically with defaults.
+
 - Empty `endpoint` uses `OTEL_EXPORTER_OTLP_ENDPOINT` or `localhost:4317`.
 - HTTP endpoints (e.g. `http://...` or port 4318) use OTLP/HTTP; otherwise OTLP/gRPC.
+- If you omit `service.name` / `service.version` in InitTracer args, the package sets `service.name` to a UUID and `service.version` to `0.0.0`.
 
 ### 2. Core NATS: Publish / Subscribe
 
@@ -103,9 +110,10 @@ for m := range batch.MessagesWithContext() {
 
 | Item | Description |
 |------|-------------|
-| **InitTracer** | Must be called once; sets global TracerProvider and TextMapPropagator. |
-| **Connect** | `Connect(url string, natsOpts []nats.Option)`; no WithTracerProvider/WithPropagator. |
-| **Error** | If InitTracer was not called, `Connect` returns **`ErrInitTracerRequired`**. |
+| **InitTracer** | Optional but **recommended**. Sets global TracerProvider and TextMapPropagator; if not called, the first `Connect` initializes with default endpoint and auto service.name/version. |
+| **ShutdownTracer** | Optional; the package registers `runtime.AddCleanup` (Go 1.24+) so shutdown runs at process teardown. Call `defer ShutdownTracer()` for guaranteed flush before exit. |
+| **Connect** | `Connect(url string, natsOpts []nats.Option)`. If tracer not initialized, calls `InitTracer("", nil)` first. |
+| **ConnectTLS / ConnectWithCredentials** | Require InitTracer to have been called first (return **`ErrInitTracerRequired`** otherwise). |
 | **Tests** | Use `natstrace.InitTracer("", natstrace.WithTracerProvider(tp))` (and optionally `otel.SetTextMapPropagator(prop)`) before `Connect(url, nil)`. |
 
 ---

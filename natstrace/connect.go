@@ -13,7 +13,9 @@ var ErrInitTracerRequired = errors.New("natstrace: InitTracer must be called bef
 // InitTracer must be called first or Connect returns ErrInitTracerRequired.
 func Connect(url string, natsOpts []nats.Option) (*Conn, error) {
 	if !isTracerInitialized() {
-		return nil, ErrInitTracerRequired
+		if err := InitTracer("", nil); err != nil {
+			return nil, err
+		}
 	}
 	nc, err := nats.Connect(url, natsOpts...)
 	if err != nil {
