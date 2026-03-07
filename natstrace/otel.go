@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const (
@@ -31,6 +32,12 @@ var (
 	globalShutdown    func()
 	// cleanupOwner is used with runtime.AddCleanup so ShutdownTracer runs when the process tears down (best-effort; call defer ShutdownTracer() for guaranteed flush).
 	cleanupOwner *struct{}
+)
+
+// defaultPropagator is the process-wide propagator (TraceContext + Baggage). Used by InitTracer.
+var defaultPropagator = propagation.NewCompositeTextMapPropagator(
+	propagation.TraceContext{},
+	propagation.Baggage{},
 )
 
 // WithTracerProvider returns an InitTracer argument that uses the given TracerProvider
@@ -57,6 +64,18 @@ func InitTracer(endpoint string, args ...interface{}) error {
 	for _, a := range args {
 		if opt, ok := a.(TracerProviderOption); ok {
 			otel.SetTracerProvider(opt.TracerProvider)
+			otel.SetTextMapPropagator(defaultPropagator)
+			if sdkTP, ok := opt.TracerProvider.(*sdktrace.TracerProvider); ok {
+				globalShutdown = func() {
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = sdkTP.Shutdown(shutdownCtx)
+				}
+				cleanupOwner = &struct{}{}
+				runtime.AddCleanup(cleanupOwner, func(struct{}) { ShutdownTracer() }, struct{}{})
+			} else {
+				globalShutdown = nil
+			}
 			tracerInitialized = true
 			return nil
 		}
@@ -112,10 +131,7 @@ func InitTracer(endpoint string, args ...interface{}) error {
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
+	otel.SetTextMapPropagator(defaultPropagator)
 
 	globalShutdown = func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -128,7 +144,8 @@ func InitTracer(endpoint string, args ...interface{}) error {
 	return nil
 }
 
-// ShutdownTracer shuts down the TracerProvider set by InitTracer.
+// ShutdownTracer shuts down the TracerProvider set by InitTracer and resets the global state.
+// After ShutdownTracer, Connect must not be used until InitTracer is called again.
 // The package also registers runtime.AddCleanup (Go 1.24+) so ShutdownTracer runs when the process tears down (best-effort).
 // For guaranteed flush before exit, call "defer natstrace.ShutdownTracer()" in main.
 func ShutdownTracer() {
@@ -136,6 +153,8 @@ func ShutdownTracer() {
 		globalShutdown()
 		globalShutdown = nil
 	}
+	tracerInitialized = false
+	otel.SetTracerProvider(noop.NewTracerProvider())
 }
 
 func useHTTPEndpoint(endpoint string) bool {
