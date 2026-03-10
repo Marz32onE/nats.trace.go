@@ -15,7 +15,7 @@ import (
 
 const (
 	instrumentationName    = "github.com/Marz32onE/natstrace/natstrace"
-	instrumentationVersion = "0.3.0"
+	instrumentationVersion = "0.1.9"
 	messagingSystem        = "nats"
 )
 

@@ -306,3 +306,63 @@ func TestFetchBytesTraceContext(t *testing.T) {
 		_ = m.Msg.Ack()
 	}
 }
+
+func TestConsumerInfo(t *testing.T) {
+	url := startJetStreamServer(t)
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(trace.NewTracerProvider()))
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	js, err := jetstreamtrace.New(conn)
+	require.NoError(t, err)
+	ctx := context.Background()
+	_, err = js.CreateOrUpdateStream(ctx, jetstreamtrace.StreamConfig{
+		Name:     "CONSINFOTEST",
+		Subjects: []string{"consinfo.>"},
+	})
+	require.NoError(t, err)
+	stream, err := js.Stream(ctx, "CONSINFOTEST")
+	require.NoError(t, err)
+	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstreamtrace.ConsumerConfig{
+		Durable:       "info-cons",
+		FilterSubject: "consinfo.x",
+		AckPolicy:     jetstreamtrace.AckExplicitPolicy,
+	})
+	require.NoError(t, err)
+
+	info, err := cons.Info(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	require.Equal(t, "info-cons", info.Name)
+}
+
+func TestConsumerCachedInfo(t *testing.T) {
+	url := startJetStreamServer(t)
+	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(trace.NewTracerProvider()))
+	conn, err := natstrace.Connect(url, nil)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	js, err := jetstreamtrace.New(conn)
+	require.NoError(t, err)
+	ctx := context.Background()
+	_, err = js.CreateOrUpdateStream(ctx, jetstreamtrace.StreamConfig{
+		Name:     "CACHEDCONSINFO",
+		Subjects: []string{"cachedcons.>"},
+	})
+	require.NoError(t, err)
+	stream, err := js.Stream(ctx, "CACHEDCONSINFO")
+	require.NoError(t, err)
+	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstreamtrace.ConsumerConfig{
+		Durable:       "cached-cons",
+		FilterSubject: "cachedcons.x",
+		AckPolicy:     jetstreamtrace.AckExplicitPolicy,
+	})
+	require.NoError(t, err)
+	_, _ = cons.Info(ctx) // populate cache
+
+	cached := cons.CachedInfo()
+	require.NotNil(t, cached)
+	require.Equal(t, "cached-cons", cached.Name)
+}

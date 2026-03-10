@@ -48,6 +48,15 @@ type StreamConfig = jetstream.StreamConfig
 // ConsumerConfig mirrors jetstream.ConsumerConfig for consumer creation.
 type ConsumerConfig = jetstream.ConsumerConfig
 
+// StreamInfo mirrors jetstream.StreamInfo (stream metadata from Info).
+type StreamInfo = jetstream.StreamInfo
+
+// StreamInfoOpt is option for Stream.Info (e.g. jetstream.WithDeletedDetails).
+type StreamInfoOpt = jetstream.StreamInfoOpt
+
+// ConsumerNameLister mirrors jetstream.ConsumerNameLister (iterate consumer names).
+type ConsumerNameLister = jetstream.ConsumerNameLister
+
 // AckPolicy and ack policies mirror jetstream (so callers need not import jetstream).
 type AckPolicy = jetstream.AckPolicy
 
