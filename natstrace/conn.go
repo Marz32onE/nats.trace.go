@@ -15,16 +15,26 @@ import (
 
 const (
 	instrumentationName    = "github.com/Marz32onE/natstrace/natstrace"
-	instrumentationVersion = "0.1.9"
+	instrumentationVersion = "0.1.10"
 	messagingSystem        = "nats"
 )
 
-// MsgHandler is the callback for subscriptions. Same as nats.MsgHandler but with context
-// that carries the trace extracted from the message headers.
-type MsgHandler func(ctx context.Context, msg *nats.Msg)
+// MsgWithContext carries a message and the context with extracted trace (Subscribe/QueueSubscribe).
+// Use m.Msg for the message and m.Context() for the trace context. Naming aligns with jetstreamtrace.MsgWithContext.
+type MsgWithContext struct {
+	Msg *nats.Msg
+	Ctx context.Context
+}
+
+// Context returns the context with extracted trace.
+func (m MsgWithContext) Context() context.Context { return m.Ctx }
+
+// MsgHandler is the callback for subscriptions. Same as nats.MsgHandler but receives MsgWithContext
+// (trace in m.Context(), message in m.Msg). Type name matches nats.MsgHandler.
+type MsgHandler func(m MsgWithContext)
 
 // Conn is a tracing-aware wrapper around *nats.Conn. API mirrors nats.Conn; the only
-// difference is Publish/PublishMsg take context.Context and handlers receive (ctx, msg).
+// difference is Publish/PublishMsg take context.Context and handlers receive MsgWithContext.
 type Conn struct {
 	nc         *nats.Conn
 	tracer     trace.Tracer
@@ -125,12 +135,12 @@ func (c *Conn) Request(ctx context.Context, subject string, data []byte, timeout
 	return reply, nil
 }
 
-// Subscribe subscribes to subject. Handler receives (ctx, msg) with ctx carrying extracted trace.
+// Subscribe subscribes to subject. Handler receives MsgWithContext (m.Msg, m.Context()).
 func (c *Conn) Subscribe(subject string, handler MsgHandler) (*nats.Subscription, error) {
 	return c.nc.Subscribe(subject, c.wrapHandler(subject, "", handler))
 }
 
-// QueueSubscribe is the queue-group variant. Handler receives (ctx, msg).
+// QueueSubscribe is the queue-group variant. Handler receives MsgWithContext.
 func (c *Conn) QueueSubscribe(subject, queue string, handler MsgHandler) (*nats.Subscription, error) {
 	return c.nc.QueueSubscribe(subject, queue, c.wrapHandler(subject, queue, handler))
 }
@@ -149,7 +159,7 @@ func (c *Conn) wrapHandler(subject, queue string, handler MsgHandler) nats.MsgHa
 		}
 		ctx, span := c.tracer.Start(context.Background(), spanName, opts...)
 		defer span.End()
-		handler(ctx, msg)
+		handler(MsgWithContext{Msg: msg, Ctx: ctx})
 	}
 }
 

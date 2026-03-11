@@ -147,8 +147,8 @@ func TestSubscribeExtractsTraceContext(t *testing.T) {
 
 	subject := "test.subscribe"
 	done := make(chan struct{}, 1)
-	_, err = conn.Subscribe(subject, func(ctx context.Context, _ *nats.Msg) {
-		_ = oteltrace.SpanFromContext(ctx).SpanContext().TraceID()
+	_, err = conn.Subscribe(subject, func(m natstrace.MsgWithContext) {
+		_ = oteltrace.SpanFromContext(m.Context()).SpanContext().TraceID()
 		done <- struct{}{}
 	})
 	require.NoError(t, err)
@@ -188,7 +188,7 @@ func TestQueueSubscribeRecordsQueueName(t *testing.T) {
 
 	subject, queue := "test.queue", "workers"
 	done := make(chan struct{}, 1)
-	_, err = conn.QueueSubscribe(subject, queue, func(ctx context.Context, _ *nats.Msg) {
+	_, err = conn.QueueSubscribe(subject, queue, func(m natstrace.MsgWithContext) {
 		done <- struct{}{}
 	})
 	require.NoError(t, err)
@@ -217,7 +217,7 @@ func TestSubscribeConsumerSpanLinkedToProducer(t *testing.T) {
 
 	subject := "test.linkage"
 	done := make(chan struct{}, 1)
-	_, err = conn.Subscribe(subject, func(ctx context.Context, _ *nats.Msg) {
+	_, err = conn.Subscribe(subject, func(m natstrace.MsgWithContext) {
 		done <- struct{}{}
 	})
 	require.NoError(t, err)

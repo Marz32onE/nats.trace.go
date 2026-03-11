@@ -12,9 +12,9 @@ import (
 	"github.com/Marz32onE/natstrace/natstrace"
 )
 
-// MessageHandler is the callback for Consume. Same as jetstream MessageHandler but receives
-// context with trace extracted from message headers.
-type MessageHandler func(ctx context.Context, msg Msg)
+// MsgHandler is the callback for Consume. Receives MsgWithContext (implements Msg; use m.Data(), m.Ack(), m.Context()).
+// Type name matches nats.MsgHandler and natstrace.MsgHandler for unified naming.
+type MsgHandler func(m MsgWithContext)
 
 // ConsumeContext is returned by Consume. Same as jetstream.ConsumeContext; call Stop() when done.
 type ConsumeContext interface {
@@ -29,15 +29,21 @@ type MessagesContext interface {
 	Drain()
 }
 
-// MsgWithContext carries a message and the context with extracted trace (for Fetch batch iteration).
+// MsgWithContext carries a message and the context with extracted trace. It embeds Msg so it implements
+// jetstream.Msg (use m.Data(), m.Ack(), m.Headers() etc.); use m.Context() or m.Ctx for the trace context.
 type MsgWithContext struct {
+	Msg
 	Ctx context.Context
-	Msg Msg
 }
 
-// MessageBatch is the result of Fetch/FetchBytes/FetchNoWait. Iterate over MessagesWithContext()
-// to get (ctx, msg) with trace context; call Error() after the channel is closed.
+// Context returns the context with extracted trace. Use for passing trace into downstream calls.
+func (m MsgWithContext) Context() context.Context { return m.Ctx }
+
+// MessageBatch is the result of Fetch/FetchBytes/FetchNoWait. Aligns with jetstream.MessageBatch:
+// Messages() returns the same channel as the original API; MessagesWithContext() adds (ctx, msg) with trace.
+// Call Error() after the channel is closed.
 type MessageBatch interface {
+	Messages() <-chan Msg
 	MessagesWithContext() <-chan MsgWithContext
 	Error() error
 }
@@ -48,7 +54,7 @@ type ConsumerInfo = jetstream.ConsumerInfo
 // Consumer mirrors jetstream.Consumer. Consume, Messages, Next; Fetch/FetchBytes/FetchNoWait
 // return MessageBatch with MessagesWithContext() for trace context per message.
 type Consumer interface {
-	Consume(handler MessageHandler, opts ...jetstream.PullConsumeOpt) (ConsumeContext, error)
+	Consume(handler MsgHandler, opts ...jetstream.PullConsumeOpt) (ConsumeContext, error)
 	Messages(opts ...jetstream.PullMessagesOpt) (MessagesContext, error)
 	Next(ctx context.Context, opts ...jetstream.FetchOpt) (context.Context, Msg, error)
 	Fetch(batch int, opts ...jetstream.FetchOpt) (MessageBatch, error)
@@ -68,7 +74,7 @@ type consumerImpl struct {
 	c            jetstream.Consumer
 }
 
-func (c *consumerImpl) Consume(handler MessageHandler, opts ...jetstream.PullConsumeOpt) (ConsumeContext, error) {
+func (c *consumerImpl) Consume(handler MsgHandler, opts ...jetstream.PullConsumeOpt) (ConsumeContext, error) {
 	tracer, prop := c.conn.TraceContext()
 	wrapped := func(msg jetstream.Msg) {
 		h := msg.Headers()
@@ -87,7 +93,7 @@ func (c *consumerImpl) Consume(handler MessageHandler, opts ...jetstream.PullCon
 		}
 		ctx, span := tracer.Start(context.Background(), spanName, startOpts...)
 		defer span.End()
-		handler(ctx, msg)
+		handler(MsgWithContext{Msg: msg, Ctx: ctx})
 	}
 	cc, err := c.c.Consume(wrapped, opts...)
 	if err != nil {
@@ -168,8 +174,13 @@ func receiveAttrs(msg jetstream.Msg, opType string) []attribute.KeyValue {
 }
 
 type messageBatchTrace struct {
-	ch  chan MsgWithContext
-	raw jetstream.MessageBatch
+	ch     chan MsgWithContext
+	msgsCh chan Msg
+	raw    jetstream.MessageBatch
+}
+
+func (m *messageBatchTrace) Messages() <-chan Msg {
+	return m.msgsCh
 }
 
 func (m *messageBatchTrace) MessagesWithContext() <-chan MsgWithContext {
@@ -182,8 +193,10 @@ func (m *messageBatchTrace) Error() error {
 
 func wrapMessageBatch(conn *natstrace.Conn, consumerName string, raw jetstream.MessageBatch) MessageBatch {
 	ch := make(chan MsgWithContext)
+	msgsCh := make(chan Msg)
 	go func() {
 		defer close(ch)
+		defer close(msgsCh)
 		tracer, prop := conn.TraceContext()
 		var lastSpan trace.Span
 		for msg := range raw.Messages() {
@@ -207,13 +220,14 @@ func wrapMessageBatch(conn *natstrace.Conn, consumerName string, raw jetstream.M
 			}
 			ctx, span := tracer.Start(context.Background(), spanName, opts...)
 			lastSpan = span
-			ch <- MsgWithContext{Ctx: ctx, Msg: msg}
+			ch <- MsgWithContext{Msg: msg, Ctx: ctx}
+			msgsCh <- msg
 		}
 		if lastSpan != nil {
 			lastSpan.End()
 		}
 	}()
-	return &messageBatchTrace{ch: ch, raw: raw}
+	return &messageBatchTrace{ch: ch, msgsCh: msgsCh, raw: raw}
 }
 
 type consumeContextImpl struct {

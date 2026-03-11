@@ -28,8 +28,8 @@ pkg/natstrace/
 ```
 
 - **Tracer and propagator:** Provided by the **global** default. You **may** call **`InitTracer(endpoint, attrs...)`** first to set service name/version and endpoint; if you don’t, the first **`Connect(url, ...)`** will initialize the tracer with default endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT` or `localhost:4317`), auto-generated `service.name` (UUID), and `service.version` (`0.0.0`). **Explicit InitTracer is recommended** so you can set a proper service name and version.
-- **Connection:** `natstrace.Connect(url, natsOpts)` returns **`*natstrace.Conn`**, used like `*nats.Conn`; Publish/Request take an extra `context.Context`, and Subscribe handlers are `func(ctx context.Context, msg *nats.Msg)` with trace extracted from headers into `ctx`.
-- **JetStream:** `jetstreamtrace.New(conn)` requires **`*natstrace.Conn`**. Publish accepts `context.Context`; Consume / Messages / Fetch return contexts (or `MessageBatch.MessagesWithContext()`) that carry trace from message headers.
+- **Connection:** `natstrace.Connect(url, natsOpts)` returns **`*natstrace.Conn`**, used like `*nats.Conn`; Publish/Request take an extra `context.Context`, and Subscribe handlers receive **`MsgWithContext`** (m.Msg, m.Context()); type **MsgHandler** matches nats.MsgHandler naming.
+- **JetStream:** `jetstreamtrace.New(conn)` requires **`*natstrace.Conn`**. Publish accepts `context.Context`; Consume / Messages / Fetch use **MsgWithContext**; handler type **MsgHandler** aligns with natstrace and nats.go.
 
 ---
 
@@ -74,8 +74,8 @@ func main() {
 conn.Publish(ctx, "subject", []byte("data"))
 conn.PublishMsg(ctx, msg)
 
-conn.Subscribe("subject", func(ctx context.Context, msg *nats.Msg) {
-    // ctx carries trace from headers
+conn.Subscribe("subject", func(m natstrace.MsgWithContext) {
+    // m.Msg, m.Context() — trace from headers in m.Context()
 })
 conn.QueueSubscribe("subject", "queue", handler)
 
@@ -87,8 +87,8 @@ reply, err := conn.Request(ctx, "subject", []byte("ping"), 2*time.Second)
 ```go
 js, err := jetstreamtrace.New(conn)
 // After creating stream/consumer:
-cons.Consume(func(ctx context.Context, msg jetstreamtrace.Msg) {
-    // ctx has trace from message headers
+cons.Consume(func(m jetstreamtrace.MsgWithContext) {
+    // m implements Msg (m.Data(), m.Ack()); m.Context() has trace from message headers
 })
 // Or
 iter, _ := cons.Messages()
@@ -96,7 +96,7 @@ ctx, msg, err := iter.Next()
 // Or
 batch, _ := cons.Fetch(5, jetstream.FetchMaxWait(time.Second))
 for m := range batch.MessagesWithContext() {
-    // m.Ctx has trace
+    // m.Data(), m.Ack(), m.Context() — MsgWithContext aligns with jetstream.Msg
 }
 ```
 

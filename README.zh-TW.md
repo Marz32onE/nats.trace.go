@@ -28,8 +28,8 @@ pkg/natstrace/
 ```
 
 - **Tracer 與 Propagator**：由 **global** 提供。必須先呼叫 **`InitTracer(endpoint, attrs...)`**，之後 `Connect` / `ConnectTLS` / `ConnectWithCredentials` 與 `jetstreamtrace.New(conn)` 才會使用同一個 TracerProvider 與 TextMapPropagator（TraceContext + Baggage）。
-- **連線**：`natstrace.Connect(url, natsOpts)` 回傳 **`*natstrace.Conn`**，可當作 `*nats.Conn` 使用；差別在於 Publish/Request 多一個 `context.Context`，Subscribe 的 handler 為 `func(ctx context.Context, msg *nats.Msg)`，`ctx` 內含從 header 解出的 trace。
-- **JetStream**：`jetstreamtrace.New(conn)` 需要 **`*natstrace.Conn`**，以延續同一套 trace 與 propagator。Publish 與官方一樣接受 `context.Context`；Consume / Messages / Fetch 回傳的 context 或 `MessageBatch.MessagesWithContext()` 的 `ctx` 皆帶有從訊息 header 解出的 trace。
+- **連線**：`natstrace.Connect(url, natsOpts)` 回傳 **`*natstrace.Conn`**，可當作 `*nats.Conn` 使用；Publish/Request 多一個 `context.Context`，Subscribe 的 handler 收到 **`MsgWithContext`**（m.Msg、m.Context()）；型別 **MsgHandler** 與 nats.MsgHandler 命名一致。
+- **JetStream**：`jetstreamtrace.New(conn)` 需要 **`*natstrace.Conn`**。Publish 接受 `context.Context`；Consume / Messages / Fetch 皆使用 **MsgWithContext**；handler 型別 **MsgHandler** 與 natstrace、nats.go 一致。
 
 ---
 
@@ -68,9 +68,9 @@ func main() {
 conn.Publish(ctx, "subject", []byte("data"))
 conn.PublishMsg(ctx, msg)
 
-// Subscribe：handler 收到 (ctx, msg)，ctx 帶有從 header 解出的 trace
-conn.Subscribe("subject", func(ctx context.Context, msg *nats.Msg) {
-    // 使用 ctx 建立子 span 或往下游傳播
+// Subscribe：handler 收到 MsgWithContext（m.Msg、m.Context()）
+conn.Subscribe("subject", func(m natstrace.MsgWithContext) {
+    // m.Context() 帶有從 header 解出的 trace
 })
 conn.QueueSubscribe("subject", "queue", handler)
 
@@ -83,8 +83,8 @@ reply, err := conn.Request(ctx, "subject", []byte("ping"), 2*time.Second)
 ```go
 js, err := jetstreamtrace.New(conn)
 // 建立 stream / consumer 後：
-cons.Consume(func(ctx context.Context, msg jetstreamtrace.Msg) {
-    // ctx 帶有從訊息 header 解出的 trace
+cons.Consume(func(m jetstreamtrace.MsgWithContext) {
+    // m 實作 Msg（m.Data()、m.Ack()）；m.Context() 帶有從訊息 header 解出的 trace
 })
 // 或
 iter, _ := cons.Messages()
@@ -92,7 +92,7 @@ ctx, msg, err := iter.Next()
 // 或
 batch, _ := cons.Fetch(5, jetstream.FetchMaxWait(time.Second))
 for m := range batch.MessagesWithContext() {
-    // m.Ctx 帶有 trace
+    // m.Data()、m.Ack()、m.Context() — MsgWithContext 對齊 jetstream.Msg
 }
 ```
 

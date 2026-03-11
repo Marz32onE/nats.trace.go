@@ -106,10 +106,10 @@ func TestFetchReturnsMessagesWithTraceContext(t *testing.T) {
 		require.NoError(t, ferr)
 		for m := range batch.MessagesWithContext() {
 			received++
-			assert.Equal(t, "hello fetch", string(m.Msg.Data()))
-			span := oteltrace.SpanFromContext(m.Ctx)
+			assert.Equal(t, "hello fetch", string(m.Data()))
+			span := oteltrace.SpanFromContext(m.Context())
 			assert.True(t, span.SpanContext().TraceID().IsValid(), "context should have valid trace ID")
-			_ = m.Msg.Ack()
+			_ = m.Ack()
 		}
 		if received == 1 {
 			break
@@ -163,11 +163,11 @@ func TestConsumeTraceContext(t *testing.T) {
 	require.NoError(t, err)
 
 	done := make(chan struct{}, 1)
-	cc, err := cons.Consume(func(msgCtx context.Context, msg jetstreamtrace.Msg) {
-		if oteltrace.SpanFromContext(msgCtx).SpanContext().TraceID().IsValid() {
+	cc, err := cons.Consume(func(m jetstreamtrace.MsgWithContext) {
+		if oteltrace.SpanFromContext(m.Context()).SpanContext().TraceID().IsValid() {
 			done <- struct{}{}
 		}
-		_ = msg.Ack()
+		_ = m.Ack()
 	})
 	require.NoError(t, err)
 	defer cc.Stop()
@@ -262,8 +262,8 @@ func TestFetchNoWaitReturnsTraceContext(t *testing.T) {
 	n := 0
 	for m := range batch.MessagesWithContext() {
 		n++
-		assert.True(t, oteltrace.SpanFromContext(m.Ctx).SpanContext().TraceID().IsValid(), "context should have trace")
-		_ = m.Msg.Ack()
+		assert.True(t, oteltrace.SpanFromContext(m.Context()).SpanContext().TraceID().IsValid(), "context should have trace")
+		_ = m.Ack()
 	}
 	assert.Equal(t, 1, n)
 }
@@ -302,8 +302,8 @@ func TestFetchBytesTraceContext(t *testing.T) {
 	batch, err := cons.FetchBytes(1024, jetstream.FetchMaxWait(5*time.Second))
 	require.NoError(t, err)
 	for m := range batch.MessagesWithContext() {
-		assert.True(t, oteltrace.SpanFromContext(m.Ctx).SpanContext().TraceID().IsValid(), "context should have trace")
-		_ = m.Msg.Ack()
+		assert.True(t, oteltrace.SpanFromContext(m.Context()).SpanContext().TraceID().IsValid(), "context should have trace")
+		_ = m.Ack()
 	}
 }
 
