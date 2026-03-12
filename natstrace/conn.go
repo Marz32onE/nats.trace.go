@@ -14,7 +14,9 @@ import (
 )
 
 const (
-	instrumentationName    = "github.com/Marz32onE/natstrace/natstrace"
+	// ScopeName is the instrumentation scope name for Tracer creation (OTel contrib guideline).
+	ScopeName             = "github.com/Marz32onE/natstrace/natstrace"
+	instrumentationName    = ScopeName
 	instrumentationVersion = "0.1.10"
 	messagingSystem        = "nats"
 )
@@ -41,13 +43,64 @@ type Conn struct {
 	propagator propagation.TextMapPropagator
 }
 
-func newConn(nc *nats.Conn) *Conn {
-	tp := otel.GetTracerProvider()
-	prop := otel.GetTextMapPropagator()
+// Option configures Conn. Per OTel contrib: accept TracerProvider and Propagators, not Tracer.
+type Option interface {
+	apply(*connConfig)
+}
+
+type optionFunc func(*connConfig)
+
+func (f optionFunc) apply(c *connConfig) { f(c) }
+
+type connConfig struct {
+	TracerProvider trace.TracerProvider
+	Propagators    propagation.TextMapPropagator
+}
+
+func newConnConfig(opts ...Option) *connConfig {
+	c := &connConfig{}
+	for _, o := range opts {
+		o.apply(c)
+	}
+	return c
+}
+
+// WithTracerProvider sets the TracerProvider for this Conn. Defaults to otel.GetTracerProvider().
+func WithTracerProvider(tp trace.TracerProvider) Option {
+	return optionFunc(func(c *connConfig) {
+		if tp != nil {
+			c.TracerProvider = tp
+		}
+	})
+}
+
+// WithPropagators sets the TextMapPropagator for inject/extract. Defaults to otel.GetTextMapPropagator().
+func WithPropagators(p propagation.TextMapPropagator) Option {
+	return optionFunc(func(c *connConfig) {
+		if p != nil {
+			c.Propagators = p
+		}
+	})
+}
+
+// Version returns the instrumentation module version for tracer creation (OTel contrib guideline).
+func Version() string {
+	return instrumentationVersion
+}
+
+func newConn(nc *nats.Conn, opts ...Option) *Conn {
+	cfg := newConnConfig(opts...)
+	if cfg.TracerProvider == nil {
+		cfg.TracerProvider = otel.GetTracerProvider()
+	}
+	if cfg.Propagators == nil {
+		cfg.Propagators = otel.GetTextMapPropagator()
+	}
+	tracer := cfg.TracerProvider.Tracer(ScopeName, trace.WithInstrumentationVersion(Version()), trace.WithSchemaURL(semconv.SchemaURL))
 	return &Conn{
 		nc:         nc,
-		tracer:     tp.Tracer(instrumentationName, trace.WithInstrumentationVersion(instrumentationVersion), trace.WithSchemaURL(semconv.SchemaURL)),
-		propagator: prop,
+		tracer:     tracer,
+		propagator: cfg.Propagators,
 	}
 }
 

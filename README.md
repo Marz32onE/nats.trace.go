@@ -114,7 +114,7 @@ for m := range batch.MessagesWithContext() {
 | **ShutdownTracer** | Optional; the package registers `runtime.AddCleanup` (Go 1.24+) so shutdown runs at process teardown. Call `defer ShutdownTracer()` for guaranteed flush before exit. |
 | **Connect** | `Connect(url string, natsOpts []nats.Option)`. If tracer not initialized, calls `InitTracer("", nil)` first. |
 | **ConnectTLS / ConnectWithCredentials** | Require InitTracer to have been called first (return **`ErrInitTracerRequired`** otherwise). |
-| **Tests** | Use `natstrace.InitTracer("", natstrace.WithTracerProvider(tp))` (and optionally `otel.SetTextMapPropagator(prop)`) before `Connect(url, nil)`. |
+| **Tests** | Use `natstrace.InitTracer("", natstrace.WithTracerProviderInit(tp))` (and optionally `otel.SetTextMapPropagator(prop)`) before `Connect(url, nil)`. |
 
 ---
 

@@ -109,7 +109,7 @@ for m := range batch.MessagesWithContext() {
 | **InitTracer** | 必呼叫一次；設定 global TracerProvider 與 TextMapPropagator。 |
 | **Connect 簽名** | `Connect(url string, natsOpts []nats.Option)`，不再接受 WithTracerProvider / WithPropagator。 |
 | **錯誤** | 未先 InitTracer 就 `Connect` 會回傳 **`ErrInitTracerRequired`**。 |
-| **測試** | 測試中可呼叫 `natstrace.InitTracer("", natstrace.WithTracerProvider(tp))`（若有自訂 propagator 可先 `otel.SetTextMapPropagator(prop)`），再 `Connect(url, nil)`。 |
+| **測試** | 測試中可呼叫 `natstrace.InitTracer("", natstrace.WithTracerProviderInit(tp))`（若有自訂 propagator 可先 `otel.SetTextMapPropagator(prop)`），再 `Connect(url, nil)`。 |
 
 ---
 

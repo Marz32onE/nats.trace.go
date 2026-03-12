@@ -62,7 +62,7 @@ func TestFetchReturnsMessagesWithTraceContext(t *testing.T) {
 	tp := trace.NewTracerProvider(trace.WithSpanProcessor(sr))
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
 	otel.SetTextMapPropagator(prop)
-	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	_ = natstrace.InitTracer("", natstrace.WithTracerProviderInit(tp))
 
 	conn, err := natstrace.Connect(url, nil)
 	require.NoError(t, err)
@@ -140,7 +140,7 @@ func TestConsumeTraceContext(t *testing.T) {
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
 
 	otel.SetTextMapPropagator(prop)
-	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	_ = natstrace.InitTracer("", natstrace.WithTracerProviderInit(tp))
 	conn, err := natstrace.Connect(url, nil)
 	require.NoError(t, err)
 	defer conn.Close()
@@ -190,7 +190,7 @@ func TestMessagesNextTraceContext(t *testing.T) {
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
 
 	otel.SetTextMapPropagator(prop)
-	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	_ = natstrace.InitTracer("", natstrace.WithTracerProviderInit(tp))
 	conn, err := natstrace.Connect(url, nil)
 	require.NoError(t, err)
 	defer conn.Close()
@@ -232,7 +232,7 @@ func TestFetchNoWaitReturnsTraceContext(t *testing.T) {
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
 
 	otel.SetTextMapPropagator(prop)
-	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	_ = natstrace.InitTracer("", natstrace.WithTracerProviderInit(tp))
 	conn, err := natstrace.Connect(url, nil)
 	require.NoError(t, err)
 	defer conn.Close()
@@ -274,7 +274,7 @@ func TestFetchBytesTraceContext(t *testing.T) {
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
 
 	otel.SetTextMapPropagator(prop)
-	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(tp))
+	_ = natstrace.InitTracer("", natstrace.WithTracerProviderInit(tp))
 	conn, err := natstrace.Connect(url, nil)
 	require.NoError(t, err)
 	defer conn.Close()
@@ -309,7 +309,7 @@ func TestFetchBytesTraceContext(t *testing.T) {
 
 func TestConsumerInfo(t *testing.T) {
 	url := startJetStreamServer(t)
-	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(trace.NewTracerProvider()))
+	_ = natstrace.InitTracer("", natstrace.WithTracerProviderInit(trace.NewTracerProvider()))
 	conn, err := natstrace.Connect(url, nil)
 	require.NoError(t, err)
 	defer conn.Close()
@@ -339,7 +339,7 @@ func TestConsumerInfo(t *testing.T) {
 
 func TestConsumerCachedInfo(t *testing.T) {
 	url := startJetStreamServer(t)
-	_ = natstrace.InitTracer("", natstrace.WithTracerProvider(trace.NewTracerProvider()))
+	_ = natstrace.InitTracer("", natstrace.WithTracerProviderInit(trace.NewTracerProvider()))
 	conn, err := natstrace.Connect(url, nil)
 	require.NoError(t, err)
 	defer conn.Close()

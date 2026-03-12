@@ -40,9 +40,10 @@ var defaultPropagator = propagation.NewCompositeTextMapPropagator(
 	propagation.Baggage{},
 )
 
-// WithTracerProvider returns an InitTracer argument that uses the given TracerProvider
+// WithTracerProviderInit returns an InitTracer argument that uses the given TracerProvider
 // instead of creating one from the endpoint. Intended for tests (e.g. with a SpanRecorder).
-func WithTracerProvider(tp trace.TracerProvider) TracerProviderOption {
+// For per-connection TracerProvider, use natstrace.ConnectWithOptions(..., natstrace.WithTracerProvider(tp)).
+func WithTracerProviderInit(tp trace.TracerProvider) TracerProviderOption {
 	return TracerProviderOption{TracerProvider: tp}
 }
 
@@ -57,7 +58,7 @@ type TracerProviderOption struct {
 // an SDK TracerProvider (e.g. set by another package), InitTracer is a no-op.
 // Empty endpoint uses OTEL_EXPORTER_OTLP_ENDPOINT env or "localhost:4317".
 //
-// For tests, pass WithTracerProvider(tp) as an extra argument to use a custom provider
+// For tests, pass WithTracerProviderInit(tp) as an extra argument to use a custom provider
 // (e.g. one with tracetest.SpanRecorder) instead of creating an OTLP exporter.
 func InitTracer(endpoint string, args ...interface{}) error {
 	var attrs []attribute.KeyValue
